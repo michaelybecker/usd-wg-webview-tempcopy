@@ -9,20 +9,8 @@ npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite.
+Open the local URL printed by Vite. The WASM bindings must be built first — see [docs/building.md](docs/building.md).
 
-## Binding Work
+## Documentation
 
-Binding rebuild notes live in:
-
-```text
-docs/bindings-workflow.md
-```
-
-Generated USD Web View WASM runtime files should install into:
-
-```text
-public/usd-webview-bindings/
-```
-
-The app currently expects `public/usd-webview-bindings/usdWebViewBindings.js`. Until that runtime exists, the viewport shell runs and the runtime panel reports bindings as unavailable.
+- [Building](docs/building.md) — Prerequisites and build instructions for the WASM bindings and frontend
