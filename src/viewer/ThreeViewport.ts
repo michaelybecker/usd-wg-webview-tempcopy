@@ -3,22 +3,26 @@ import {
   AxesHelper,
   Box3,
   BoxGeometry,
-  BufferGeometry,
   Color,
   DirectionalLight,
+  DoubleSide,
   Float32BufferAttribute,
+  BufferGeometry,
   Group,
   Mesh,
-  MeshStandardMaterial,
+  MeshPhysicalMaterial,
   PerspectiveCamera,
   Scene,
   SRGBColorSpace,
+  LinearSRGBColorSpace,
   TextureLoader,
+  Texture,
   Vector3,
-  WebGLRenderer
+  WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { RenderableMesh, StageSummary } from "../usd/types";
+import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import type { PrimTransform, RenderableMesh, RenderableTexture, StageSummary } from "../usd/types";
 
 export class ThreeViewport {
   private readonly camera: PerspectiveCamera;
@@ -28,6 +32,7 @@ export class ThreeViewport {
   private readonly stageRoot = new Group();
   private readonly textureLoader = new TextureLoader();
   private readonly textureUrls: string[] = [];
+  private readonly meshByPath = new Map<string, Mesh>();
   private animationFrame = 0;
   private readonly resizeObserver: ResizeObserver;
 
@@ -60,8 +65,9 @@ export class ThreeViewport {
     this.resize();
   }
 
-  start(): void {
+  start(onTick?: () => void): void {
     const render = () => {
+      onTick?.();
       this.controls.update();
       this.renderer.render(this.scene, this.camera);
       this.animationFrame = window.requestAnimationFrame(render);
@@ -82,10 +88,11 @@ export class ThreeViewport {
     this.clearStage();
 
     const geometry = new BoxGeometry(1.4, 1.4, 1.4);
-    const material = new MeshStandardMaterial({
+    const material = new MeshPhysicalMaterial({
       color: 0xd2b46d,
       metalness: 0.15,
-      roughness: 0.42
+      roughness: 0.42,
+      side: DoubleSide,
     });
     const mesh = new Mesh(geometry, material);
     mesh.name = label;
@@ -93,7 +100,10 @@ export class ThreeViewport {
     this.frameStage();
   }
 
-  renderStage(renderables: RenderableMesh[], summary: StageSummary | null): void {
+  renderStage(
+    renderables: RenderableMesh[],
+    summary: StageSummary | null
+  ): void {
     if (!renderables.length) {
       this.setPlaceholderStage(summary?.rootFile ?? "USD stage");
       return;
@@ -102,30 +112,64 @@ export class ThreeViewport {
     this.clearStage();
 
     for (const renderable of renderables) {
-      const geometry = new BufferGeometry();
-      geometry.setAttribute("position", new Float32BufferAttribute(renderable.points, 3));
+      const rawGeometry = new BufferGeometry();
+      rawGeometry.setAttribute(
+        "position",
+        new Float32BufferAttribute(renderable.points, 3)
+      );
       if (renderable.uvs?.length) {
-        geometry.setAttribute("uv", new Float32BufferAttribute(renderable.uvs, 2));
+        const uvAttr = new Float32BufferAttribute(renderable.uvs, 2);
+        rawGeometry.setAttribute("uv", uvAttr);
+        rawGeometry.setAttribute("uv1", uvAttr); // required for aoMap
       }
-      geometry.setIndex(renderable.indices);
+      rawGeometry.setIndex(renderable.indices);
+
+      // Weld duplicate positions so computeVertexNormals can average across
+      // shared vertices. Without this every triangle has unique indices and
+      // the averaging has no effect, producing flat faceted shading.
+      const geometry = mergeVertices(rawGeometry);
+      rawGeometry.dispose();
       geometry.computeVertexNormals();
 
+      const mat = renderable.material;
       const [red = 0.72, green = 0.72, blue = 0.72] =
-        renderable.material?.diffuseColor ?? renderable.color ?? [];
-      const material = new MeshStandardMaterial({
+        mat?.diffuseColor ?? renderable.color ?? [];
+
+      const material = new MeshPhysicalMaterial({
         color: new Color(red, green, blue),
-        metalness: renderable.material?.metallic ?? 0.05,
-        roughness: renderable.material?.roughness ?? 0.55,
-        opacity: renderable.material?.opacity ?? 1,
-        transparent: (renderable.material?.opacity ?? 1) < 1
+        metalness: mat?.metallicTexture ? 1.0 : (mat?.metallic ?? 0.05),
+        roughness: mat?.roughnessTexture ? 1.0 : (mat?.roughness ?? 0.55),
+        opacity: mat?.opacity ?? 1,
+        transparent: (mat?.opacity ?? 1) < 1,
+        clearcoat: mat?.clearcoat ?? 0,
+        clearcoatRoughness: mat?.clearcoatRoughness ?? 0,
+        ior: mat?.ior ?? 1.5,
+        side: DoubleSide,
       });
-      this.applyDiffuseTexture(material, renderable);
+
+      if (mat?.emissiveColor) {
+        const [er = 0, eg = 0, eb = 0] = mat.emissiveColor;
+        material.emissive = new Color(er, eg, eb);
+      }
+
+      this.applyTexture(material, "map",                    mat?.diffuseTexture,            true);
+      this.applyTexture(material, "roughnessMap",           mat?.roughnessTexture,          false);
+      this.applyTexture(material, "metalnessMap",           mat?.metallicTexture,           false);
+      this.applyTexture(material, "normalMap",              mat?.normalTexture,             false);
+      this.applyTexture(material, "aoMap",                  mat?.occlusionTexture,          false);
+      this.applyTexture(material, "emissiveMap",            mat?.emissiveTexture,           true);
+      this.applyTexture(material, "clearcoatMap",           mat?.clearcoatTexture,          false);
+      this.applyTexture(material, "clearcoatRoughnessMap",  mat?.clearcoatRoughnessTexture, false);
+      this.applyTexture(material, "alphaMap",               mat?.opacityTexture,            false);
 
       const mesh = new Mesh(geometry, material);
       mesh.name = renderable.name || renderable.path;
+      this.meshByPath.set(renderable.path, mesh);
 
       if (renderable.matrix.length === 16) {
-        mesh.matrix.set(...(renderable.matrix as Parameters<typeof mesh.matrix.set>));
+        mesh.matrix.set(
+          ...(renderable.matrix as Parameters<typeof mesh.matrix.set>)
+        );
         mesh.matrix.transpose();
         mesh.matrixAutoUpdate = false;
       }
@@ -140,13 +184,25 @@ export class ThreeViewport {
     this.frameStage();
   }
 
+  updateTransforms(transforms: PrimTransform[]): void {
+    for (const { path, matrix } of transforms) {
+      const mesh = this.meshByPath.get(path);
+      if (!mesh || matrix.length !== 16) continue;
+      mesh.matrix.set(...(matrix as Parameters<typeof mesh.matrix.set>));
+      mesh.matrix.transpose();
+    }
+  }
+
   private clearStage(): void {
+    this.meshByPath.clear();
     this.revokeTextureUrls();
     this.stageRoot.rotation.set(0, 0, 0);
     this.stageRoot.traverse((object) => {
       if (object instanceof Mesh) {
         object.geometry.dispose();
-        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        const materials = Array.isArray(object.material)
+          ? object.material
+          : [object.material];
         for (const material of materials) {
           material.dispose();
         }
@@ -155,30 +211,37 @@ export class ThreeViewport {
     this.stageRoot.clear();
   }
 
-  private applyDiffuseTexture(material: MeshStandardMaterial, renderable: RenderableMesh): void {
-    const textureAsset = renderable.material?.diffuseTexture;
-    if (!textureAsset?.data?.length) {
+  private applyTexture(
+    material: MeshPhysicalMaterial,
+    slot: keyof MeshPhysicalMaterial,
+    asset: RenderableTexture | undefined,
+    sRGB: boolean
+  ): void {
+    if (!asset?.data?.length) {
       return;
     }
 
-    const bytes = new ArrayBuffer(textureAsset.data.byteLength);
-    new Uint8Array(bytes).set(textureAsset.data);
-    const blob = new Blob([bytes], { type: textureAsset.mimeType });
+    const bytes = new ArrayBuffer(asset.data.byteLength);
+    new Uint8Array(bytes).set(asset.data);
+    const blob = new Blob([bytes], { type: asset.mimeType });
     const url = URL.createObjectURL(blob);
     this.textureUrls.push(url);
 
     this.textureLoader.load(
       url,
-      (texture) => {
-        texture.name = textureAsset.path;
-        texture.colorSpace = SRGBColorSpace;
-        material.map = texture;
-        material.color.set(0xffffff);
+      (texture: Texture) => {
+        texture.name = asset.path;
+        texture.colorSpace = sRGB ? SRGBColorSpace : LinearSRGBColorSpace;
+        // When emissiveMap is applied, emissive must be non-black
+        if (slot === "emissiveMap" && material.emissive.getHex() === 0x000000) {
+          material.emissive.set(0xffffff);
+        }
+        (material as unknown as Record<string, unknown>)[slot as string] = texture;
         material.needsUpdate = true;
       },
       undefined,
       (error) => {
-        console.warn(`Failed to load diffuse texture for ${renderable.path}`, error);
+        console.warn(`Failed to load ${slot} for ${asset.path}`, error);
       }
     );
   }
@@ -200,7 +263,9 @@ export class ThreeViewport {
     const maxSize = Math.max(size.x, size.y, size.z, 1);
     const distance = maxSize * 3;
     this.controls.target.copy(center);
-    this.camera.position.copy(center).add(new Vector3(distance, distance * 0.65, distance));
+    this.camera.position
+      .copy(center)
+      .add(new Vector3(distance, distance * 0.65, distance));
     this.camera.near = Math.max(distance / 100, 0.01);
     this.camera.far = distance * 100;
     this.camera.updateProjectionMatrix();

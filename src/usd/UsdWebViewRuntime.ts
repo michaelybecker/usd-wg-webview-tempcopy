@@ -1,9 +1,10 @@
 import type {
   UsdWebViewBindings,
+  PrimTransform,
   RuntimeStatus,
   StageLoadRequest,
   StageLoadResult,
-  StageSummary
+  StageSummary,
 } from "./types";
 
 const RUNTIME_ENTRYPOINT = "/usd-webview-bindings/usdWebViewBindings.js";
@@ -11,18 +12,19 @@ const RUNTIME_ASSET_ROOT = "/usd-webview-bindings/";
 
 export class UsdWebViewRuntime {
   private bindings: UsdWebViewBindings | null = null;
+  currentStagePath: string | null = null;
 
   status: RuntimeStatus = {
     state: "idle",
     source: RUNTIME_ENTRYPOINT,
-    detail: "Not loaded"
+    detail: "Not loaded",
   };
 
   async load(): Promise<RuntimeStatus> {
     this.status = {
       state: "loading",
       source: RUNTIME_ENTRYPOINT,
-      detail: "Looking for USD Web View bindings"
+      detail: "Looking for USD Web View bindings",
     };
 
     try {
@@ -32,27 +34,28 @@ export class UsdWebViewRuntime {
         this.status = {
           state: "unavailable",
           source: RUNTIME_ENTRYPOINT,
-          detail: "Bindings entrypoint loaded, but window.UsdWebViewBindings.createRuntime was not registered"
+          detail:
+            "Bindings entrypoint loaded, but window.UsdWebViewBindings.createRuntime was not registered",
         };
         return this.status;
       }
 
       this.bindings = await window.UsdWebViewBindings.createRuntime({
-        locateFile: (path) => `${RUNTIME_ASSET_ROOT}${path}`
+        locateFile: (path) => `${RUNTIME_ASSET_ROOT}${path}`,
       });
       await this.bindings.ready;
 
       this.status = {
         state: "ready",
         source: RUNTIME_ENTRYPOINT,
-        detail: "USD Web View bindings ready"
+        detail: "USD Web View bindings ready",
       };
       return this.status;
     } catch (error) {
       this.status = {
         state: "unavailable",
         source: RUNTIME_ENTRYPOINT,
-        detail: describeError(error)
+        detail: describeError(error),
       };
       return this.status;
     }
@@ -68,8 +71,8 @@ export class UsdWebViewRuntime {
     if (!this.bindings?.createDataFile || !this.bindings.openStage) {
       return {
         summary: {
-          rootFile: rootFile.webkitRelativePath || rootFile.name
-        }
+          rootFile: rootFile.webkitRelativePath || rootFile.name,
+        },
       };
     }
 
@@ -82,10 +85,21 @@ export class UsdWebViewRuntime {
     const rootPath = rootFile.webkitRelativePath || rootFile.name;
     const summary = await this.bindings.openStage(rootPath);
     const normalizedSummary = normalizeStageSummary(rootPath, summary);
-    return {
-      summary: normalizedSummary,
-      renderables: normalizedSummary.error ? [] : this.bindings.extractRenderables?.(rootPath) ?? []
-    };
+
+    if (normalizedSummary.error) {
+      return { summary: normalizedSummary, renderables: [] };
+    }
+
+    const renderables = this.bindings.extractRenderables?.(rootPath) ?? [];
+    this.currentStagePath = rootPath;
+    return { summary: normalizedSummary, renderables };
+  }
+
+  extractTransformsAtTime(timeCode: number): PrimTransform[] {
+    if (!this.bindings?.extractTransformsAtTime || !this.currentStagePath) {
+      return [];
+    }
+    return this.bindings.extractTransformsAtTime(this.currentStagePath, timeCode);
   }
 }
 
@@ -101,9 +115,13 @@ function loadRuntimeEntrypoint(source: string): Promise<void> {
   if (existingScript) {
     return new Promise((resolve, reject) => {
       existingScript.addEventListener("load", () => resolve(), { once: true });
-      existingScript.addEventListener("error", () => reject(new Error(`Failed to load ${source}`)), {
-        once: true
-      });
+      existingScript.addEventListener(
+        "error",
+        () => reject(new Error(`Failed to load ${source}`)),
+        {
+          once: true,
+        }
+      );
     });
   }
 
@@ -121,18 +139,25 @@ function loadRuntimeEntrypoint(source: string): Promise<void> {
       },
       { once: true }
     );
-    script.addEventListener("error", () => reject(new Error(`Failed to load ${source}`)), {
-      once: true
-    });
+    script.addEventListener(
+      "error",
+      () => reject(new Error(`Failed to load ${source}`)),
+      {
+        once: true,
+      }
+    );
 
     document.head.append(script);
   });
 }
 
-function normalizeStageSummary(rootFile: string, summary: StageSummary | null): StageSummary {
+function normalizeStageSummary(
+  rootFile: string,
+  summary: StageSummary | null
+): StageSummary {
   return {
     rootFile,
-    ...summary
+    ...summary,
   };
 }
 

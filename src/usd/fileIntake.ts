@@ -59,7 +59,11 @@ function getEntry(item: DataTransferItem): FileSystemEntry | null {
     getAsEntry?: () => FileSystemEntry | null;
   };
 
-  return maybeWebkitItem.getAsEntry?.() ?? maybeWebkitItem.webkitGetAsEntry?.() ?? null;
+  return (
+    maybeWebkitItem.getAsEntry?.() ??
+    maybeWebkitItem.webkitGetAsEntry?.() ??
+    null
+  );
 }
 
 async function collectEntryFiles(entry: FileSystemEntry): Promise<File[]> {
@@ -84,7 +88,9 @@ function fileFromEntry(entry: FileSystemFileEntry): Promise<File> {
   });
 }
 
-async function readDirectory(entry: FileSystemDirectoryEntry): Promise<FileSystemEntry[]> {
+async function readDirectory(
+  entry: FileSystemDirectoryEntry
+): Promise<FileSystemEntry[]> {
   const reader = entry.createReader();
   const entries: FileSystemEntry[] = [];
 
@@ -106,6 +112,6 @@ async function readDirectory(entry: FileSystemDirectoryEntry): Promise<FileSyste
 function defineRelativePath(file: File, path: string): void {
   Object.defineProperty(file, "webkitRelativePath", {
     configurable: true,
-    value: path
+    value: path,
   });
 }

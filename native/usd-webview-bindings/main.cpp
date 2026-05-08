@@ -18,6 +18,7 @@
 #include "pxr/usd/sdf/layer.h"
 #include "pxr/usd/sdf/fileFormat.h"
 #include "pxr/usd/sdf/assetPath.h"
+#include "pxr/usd/sdf/relationshipSpec.h"
 #include "pxr/usd/sdf/usdzFileFormat.h"
 #include "pxr/usd/sdf/usdzResolver.h"
 #include "pxr/usd/usd/attribute.h"
@@ -44,6 +45,7 @@
 
 #include <algorithm>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -139,6 +141,58 @@ _RelationshipNameLooksLikeMaterialBinding(const TfToken& name)
     return TfStringStartsWith(name.GetString(), "material:binding");
 }
 
+// Reads raw relationship targets directly from SDF layers, bypassing USD's
+// composed relationship API. Necessary for older USDZ files where the
+// material:binding relationship was authored without an applied API schema,
+// which causes GetTargets()/GetForwardedTargets() to return empty in USD 26+.
+SdfPathVector
+_GetRelationshipTargetsFromLayers(const UsdPrim& prim, const TfToken& relName)
+{
+    const SdfPath relPath = prim.GetPath().AppendProperty(relName);
+
+    auto tryLayer = [&](const SdfLayerHandle& layer) -> SdfPathVector {
+        if (!layer) return {};
+        SdfRelationshipSpecHandle relSpec = TfDynamic_cast<SdfRelationshipSpecHandle>(
+            layer->GetObjectAtPath(relPath));
+        if (!relSpec) return {};
+        const SdfTargetsProxy& proxy = relSpec->GetTargetPathList();
+        for (const SdfPath& path : proxy.GetExplicitItems())   { return { path }; }
+        for (const SdfPath& path : proxy.GetPrependedItems())  { return { path }; }
+        for (const SdfPath& path : proxy.GetAppendedItems())   { return { path }; }
+        for (const SdfPath& path : proxy.GetAddedItems())      { return { path }; }
+        return {};
+    };
+
+    // Try every layer the stage knows about
+    for (const SdfLayerHandle& layer : prim.GetStage()->GetUsedLayers(true)) {
+        SdfPathVector result = tryLayer(layer);
+        if (!result.empty()) return result;
+    }
+    return {};
+}
+
+// Scan the stage for Material prims under the same root as the binding prim.
+// Used as last resort when relationship targets are invisible to the USD API.
+UsdPrim
+_FindMaterialPrimByStageTraversal(const UsdPrim& bindingPrim)
+{
+    UsdStageWeakPtr stage = bindingPrim.GetStage();
+    const std::string bindingRoot = bindingPrim.GetPath().GetPrefixes().front().GetString();
+
+    // First pass: prefer materials under the same hierarchy root
+    for (const UsdPrim& p : UsdPrimRange(stage->GetPseudoRoot())) {
+        if (!p.IsA<UsdShadeMaterial>()) continue;
+        if (TfStringStartsWith(p.GetPath().GetString(), bindingRoot)) {
+            return p;
+        }
+    }
+    // Second pass: any material prim on the stage
+    for (const UsdPrim& p : UsdPrimRange(stage->GetPseudoRoot())) {
+        if (p.IsA<UsdShadeMaterial>()) return p;
+    }
+    return UsdPrim();
+}
+
 UsdShadeMaterial
 _FindBoundMaterialByAuthoredRelationships(const UsdPrim& prim)
 {
@@ -151,8 +205,12 @@ _FindBoundMaterialByAuthoredRelationships(const UsdPrim& prim)
             }
 
             SdfPathVector targets;
-            if (!relationship.GetForwardedTargets(&targets)) {
-                continue;
+            if (!relationship.GetForwardedTargets(&targets) || targets.empty()) {
+                targets.clear();
+                relationship.GetTargets(&targets);
+            }
+            if (targets.empty()) {
+                targets = _GetRelationshipTargetsFromLayers(bindingPrim, relationship.GetName());
             }
 
             for (const SdfPath& target : targets) {
@@ -180,8 +238,12 @@ _FindBoundMaterialPrimByAuthoredRelationships(const UsdPrim& prim)
             }
 
             SdfPathVector targets;
-            if (!relationship.GetForwardedTargets(&targets)) {
-                continue;
+            if (!relationship.GetForwardedTargets(&targets) || targets.empty()) {
+                targets.clear();
+                relationship.GetTargets(&targets);
+            }
+            if (targets.empty()) {
+                targets = _GetRelationshipTargetsFromLayers(bindingPrim, relationship.GetName());
             }
 
             for (const SdfPath& target : targets) {
@@ -194,7 +256,9 @@ _FindBoundMaterialPrimByAuthoredRelationships(const UsdPrim& prim)
         }
     }
 
-    return UsdPrim();
+    // All relationship APIs failed — scan stage for Material prims.
+    // Handles USD 26+ schema changes that make pre-schema material:binding invisible.
+    return _FindMaterialPrimByStageTraversal(prim);
 }
 
 emscripten::val
@@ -225,7 +289,18 @@ _Vec3Array(const GfVec3f& value)
 std::string
 _GetMimeType(const std::string& path)
 {
-    const std::string extension = TfStringToLower(TfGetExtension(path));
+    // For USDZ package-relative paths like "file.usdz[inner/texture.jpg]"
+    // the extension must be read from the inner path, not the outer one.
+    std::string effectivePath = path;
+    const size_t openBracket = path.rfind('[');
+    if (openBracket != std::string::npos) {
+        const size_t closeBracket = path.rfind(']');
+        if (closeBracket > openBracket) {
+            effectivePath = path.substr(openBracket + 1, closeBracket - openBracket - 1);
+        }
+    }
+
+    const std::string extension = TfStringToLower(TfGetExtension(effectivePath));
     if (extension == "jpg" || extension == "jpeg") {
         return "image/jpeg";
     }
@@ -345,6 +420,14 @@ _GetConnectedSourcePrim(const UsdAttribute& attribute)
 UsdPrim
 _FindSurfaceShaderPrim(const UsdPrim& materialPrim)
 {
+    // Modern USD: outputs:surface is an attribute with a .connect connection
+    UsdAttribute surfaceAttr = materialPrim.GetAttribute(TfToken("outputs:surface"));
+    SdfPathVector connections;
+    if (surfaceAttr && surfaceAttr.GetConnections(&connections) && !connections.empty()) {
+        return materialPrim.GetStage()->GetPrimAtPath(connections[0].GetPrimPath());
+    }
+
+    // Older USD: outputs:surface is a relationship
     UsdRelationship surfaceRelationship =
         materialPrim.GetRelationship(TfToken("outputs:surface"));
     SdfPathVector targets;
@@ -359,8 +442,29 @@ _FindSurfaceShaderPrim(const UsdPrim& materialPrim)
             continue;
         }
 
+        targets.clear();
         if (relationship.GetForwardedTargets(&targets) && !targets.empty()) {
             return materialPrim.GetStage()->GetPrimAtPath(targets[0].GetPrimPath());
+        }
+    }
+
+    // Fallback: scan direct children for the surface shader prim.
+    // Used when outputs:surface connections are invisible to the USD 26 API
+    // (happens with older USDZ files where API schemas weren't applied).
+    for (const UsdPrim& child : materialPrim.GetChildren()) {
+        TfToken shaderId;
+        // Prefer the child that explicitly says it's a surface shader
+        if (child.GetAttribute(TfToken("info:id")).Get(&shaderId) &&
+            (shaderId == TfToken("UsdPreviewSurface") ||
+             shaderId == TfToken("PxrSurface") ||
+             TfStringEndsWith(shaderId.GetString(), "Surface"))) {
+            return child;
+        }
+    }
+    // Any shader child as last resort
+    for (const UsdPrim& child : materialPrim.GetChildren()) {
+        if (child.IsA<UsdShadeShader>()) {
+            return child;
         }
     }
 
@@ -397,6 +501,107 @@ _GetAuthoredConnectedTexturePath(const UsdPrim& shaderPrim, const TfToken& name,
         ? filePath.GetResolvedPath()
         : filePath.GetAssetPath();
     return !path->empty();
+}
+
+emscripten::val
+_TryExtractTexture(
+    const UsdShadeShader& shader,
+    const UsdPrim& shaderPrim,
+    const TfToken& inputName,
+    const std::string& packageRootPath)
+{
+    std::string texturePath;
+    if ((shader && _GetConnectedTexturePath(shader, inputName, &texturePath)) ||
+        _GetAuthoredConnectedTexturePath(shaderPrim, inputName, &texturePath)) {
+        emscripten::val texture = _ReadTextureAsset(texturePath, packageRootPath);
+        if (!texture["data"].isUndefined()) {
+            return texture;
+        }
+    }
+    return emscripten::val::undefined();
+}
+
+// Scans material prim descendants for UsdUVTexture shaders and maps each to a
+// texture slot by file-name heuristic. Used as fallback when attribute
+// connections are invisible (older USDZ files on USD 26+).
+void
+_ExtractTexturesFromShaderDescendants(
+    const UsdPrim& root,
+    const std::string& packageRootPath,
+    emscripten::val& materialValue)
+{
+    for (const UsdPrim& child : UsdPrimRange(root)) {
+        if (child == root) continue;
+
+        TfToken shaderId;
+        if (!child.GetAttribute(TfToken("info:id")).Get(&shaderId) ||
+            shaderId != TfToken("UsdUVTexture")) {
+            continue;
+        }
+
+        SdfAssetPath filePath;
+        if (!child.GetAttribute(TfToken("inputs:file")).Get(&filePath)) {
+            continue;
+        }
+
+        const std::string rawPath = !filePath.GetResolvedPath().empty()
+            ? filePath.GetResolvedPath()
+            : filePath.GetAssetPath();
+        if (rawPath.empty()) {
+            continue;
+        }
+
+        emscripten::val texture = _ReadTextureAsset(rawPath, packageRootPath);
+        if (texture["data"].isUndefined()) {
+            continue;
+        }
+
+        const std::string lower = TfStringToLower(rawPath);
+
+        // Color/diffuse detection: match "color", "diffuse", "albedo", "basecolor"
+        // or presence of a valid outputs:rgb (color output) attribute
+        const bool hasRgbOutput =
+            child.GetAttribute(TfToken("outputs:rgb")) &&
+            child.GetAttribute(TfToken("outputs:rgb")).IsAuthored();
+        const bool nameIsColor =
+            lower.find("color") != std::string::npos ||
+            lower.find("diffuse") != std::string::npos ||
+            lower.find("albedo") != std::string::npos ||
+            lower.find("basecolor") != std::string::npos;
+
+        if ((hasRgbOutput || nameIsColor) && materialValue["diffuseTexture"].isUndefined()) {
+            materialValue.set("diffuseTexture", texture);
+        } else if ((lower.find("clearcoat") != std::string::npos &&
+                    lower.find("rough") != std::string::npos) &&
+                   materialValue["clearcoatRoughnessTexture"].isUndefined()) {
+            materialValue.set("clearcoatRoughnessTexture", texture);
+        } else if (lower.find("clearcoat") != std::string::npos &&
+                   materialValue["clearcoatTexture"].isUndefined()) {
+            materialValue.set("clearcoatTexture", texture);
+        } else if ((lower.find("rough") != std::string::npos) &&
+                   materialValue["roughnessTexture"].isUndefined()) {
+            materialValue.set("roughnessTexture", texture);
+        } else if ((lower.find("metal") != std::string::npos) &&
+                   materialValue["metallicTexture"].isUndefined()) {
+            materialValue.set("metallicTexture", texture);
+        } else if ((lower.find("normal") != std::string::npos ||
+                    lower.find("nrm") != std::string::npos) &&
+                   materialValue["normalTexture"].isUndefined()) {
+            materialValue.set("normalTexture", texture);
+        } else if ((lower.find("occlusion") != std::string::npos ||
+                    lower.find("_ao") != std::string::npos) &&
+                   materialValue["occlusionTexture"].isUndefined()) {
+            materialValue.set("occlusionTexture", texture);
+        } else if ((lower.find("emissive") != std::string::npos ||
+                    lower.find("emission") != std::string::npos) &&
+                   materialValue["emissiveTexture"].isUndefined()) {
+            materialValue.set("emissiveTexture", texture);
+        } else if ((lower.find("opacity") != std::string::npos ||
+                    lower.find("alpha") != std::string::npos) &&
+                   materialValue["opacityTexture"].isUndefined()) {
+            materialValue.set("opacityTexture", texture);
+        }
+    }
 }
 
 emscripten::val
@@ -452,10 +657,17 @@ _ExtractMaterial(
         materialValue.set("shaderId", shaderId.GetString());
     }
 
+    // Scalar properties
     GfVec3f diffuseColor;
     if ((shader && _GetInputColor(shader, TfToken("diffuseColor"), &diffuseColor)) ||
         _GetAuthoredInputColor(shaderPrim, TfToken("diffuseColor"), &diffuseColor)) {
         materialValue.set("diffuseColor", _Vec3Array(diffuseColor));
+    }
+
+    GfVec3f emissiveColor;
+    if ((shader && _GetInputColor(shader, TfToken("emissiveColor"), &emissiveColor)) ||
+        _GetAuthoredInputColor(shaderPrim, TfToken("emissiveColor"), &emissiveColor)) {
+        materialValue.set("emissiveColor", _Vec3Array(emissiveColor));
     }
 
     float scalar = 0.0f;
@@ -471,14 +683,44 @@ _ExtractMaterial(
         _GetAuthoredInputFloat(shaderPrim, TfToken("opacity"), &scalar)) {
         materialValue.set("opacity", scalar);
     }
+    if ((shader && _GetInputFloat(shader, TfToken("clearcoat"), &scalar)) ||
+        _GetAuthoredInputFloat(shaderPrim, TfToken("clearcoat"), &scalar)) {
+        materialValue.set("clearcoat", scalar);
+    }
+    if ((shader && _GetInputFloat(shader, TfToken("clearcoatRoughness"), &scalar)) ||
+        _GetAuthoredInputFloat(shaderPrim, TfToken("clearcoatRoughness"), &scalar)) {
+        materialValue.set("clearcoatRoughness", scalar);
+    }
+    if ((shader && _GetInputFloat(shader, TfToken("ior"), &scalar)) ||
+        _GetAuthoredInputFloat(shaderPrim, TfToken("ior"), &scalar)) {
+        materialValue.set("ior", scalar);
+    }
 
-    std::string texturePath;
-    if ((shader && _GetConnectedTexturePath(shader, TfToken("diffuseColor"), &texturePath)) ||
-        _GetAuthoredConnectedTexturePath(shaderPrim, TfToken("diffuseColor"), &texturePath)) {
-        emscripten::val texture = _ReadTextureAsset(texturePath, packageRootPath);
-        if (!texture["data"].isUndefined()) {
-            materialValue.set("diffuseTexture", texture);
+    // Texture channels
+    static const struct { const char* inputName; const char* resultKey; } kTextureSlots[] = {
+        { "diffuseColor",       "diffuseTexture"            },
+        { "roughness",          "roughnessTexture"          },
+        { "metallic",           "metallicTexture"           },
+        { "normal",             "normalTexture"             },
+        { "occlusion",          "occlusionTexture"          },
+        { "emissiveColor",      "emissiveTexture"           },
+        { "clearcoat",          "clearcoatTexture"          },
+        { "clearcoatRoughness", "clearcoatRoughnessTexture" },
+        { "opacity",            "opacityTexture"            },
+    };
+
+    bool foundTexture = false;
+    for (const auto& slot : kTextureSlots) {
+        emscripten::val texture = _TryExtractTexture(
+            shader, shaderPrim, TfToken(slot.inputName), packageRootPath);
+        if (!texture.isUndefined()) {
+            materialValue.set(slot.resultKey, texture);
+            foundTexture = true;
         }
+    }
+
+    if (!foundTexture && materialPrim) {
+        _ExtractTexturesFromShaderDescendants(materialPrim, packageRootPath, materialValue);
     }
 
     return materialValue;
@@ -599,6 +841,24 @@ _ExtractMeshPayload(const UsdGeomMesh& mesh, MeshPayload* payload)
     return !payload->triangleIndices.empty();
 }
 
+// Cache to avoid re-opening the stage on every ExtractTransformsAtTime call.
+// Key is the normalized stage path passed by the JS caller.
+static std::unordered_map<std::string, UsdStageRefPtr> g_stageCache;
+
+UsdStageRefPtr
+_GetOrOpenStage(const std::string& path)
+{
+    auto it = g_stageCache.find(path);
+    if (it != g_stageCache.end()) {
+        return it->second;
+    }
+    UsdStageRefPtr stage = UsdStage::Open(path);
+    if (stage) {
+        g_stageCache[path] = stage;
+    }
+    return stage;
+}
+
 } // namespace
 
 emscripten::val
@@ -643,7 +903,14 @@ InspectPrimRelationships(const std::string& stagePath, const std::string& primPa
                 _RelationshipNameLooksLikeMaterialBinding(relationship.GetName()));
 
             SdfPathVector targets;
-            if (relationship.GetForwardedTargets(&targets)) {
+            if (!relationship.GetForwardedTargets(&targets) || targets.empty()) {
+                targets.clear();
+                relationship.GetTargets(&targets);
+            }
+            if (targets.empty()) {
+                targets = _GetRelationshipTargetsFromLayers(bindingPrim, relationship.GetName());
+            }
+            if (!targets.empty()) {
                 emscripten::val targetValues = emscripten::val::array();
                 for (size_t targetIndex = 0; targetIndex < targets.size(); ++targetIndex) {
                     targetValues.set(targetIndex, targets[targetIndex].GetString());
@@ -665,7 +932,7 @@ emscripten::val
 ExtractRenderables(const std::string& path)
 {
     emscripten::val renderables = emscripten::val::array();
-    UsdStageRefPtr stage = UsdStage::Open(path);
+    UsdStageRefPtr stage = _GetOrOpenStage(path);
     if (!stage) {
         return renderables;
     }
@@ -673,7 +940,19 @@ ExtractRenderables(const std::string& path)
     UsdGeomXformCache xformCache(stage->GetStartTimeCode());
     UsdShadeMaterialBindingAPI::BindingsCache bindingsCache;
     UsdShadeMaterialBindingAPI::CollectionQueryCache collectionQueryCache;
-    const std::string packageRootPath = _GetLayerIdentifier(stage->GetRootLayer());
+
+    // For USDZ files the root layer identifier is a package-relative path like
+    // "file.usdz[Root.usdc]". Strip the inner component so we hold just the
+    // package path and ArJoinPackageRelativePath produces valid single-level
+    // package-relative texture paths ("file.usdz[textures/t.jpg]") instead of
+    // the double-nested form "file.usdz[Root.usdc][textures/t.jpg]".
+    std::string packageRootPath = _GetLayerIdentifier(stage->GetRootLayer());
+    if (ArIsPackageRelativePath(packageRootPath)) {
+        const size_t bracketPos = packageRootPath.find('[');
+        if (bracketPos != std::string::npos) {
+            packageRootPath = packageRootPath.substr(0, bracketPos);
+        }
+    }
     size_t renderableIndex = 0;
 
     for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot())) {
@@ -714,7 +993,7 @@ ExtractRenderables(const std::string& path)
 emscripten::val
 OpenStage(const std::string& path)
 {
-    UsdStageRefPtr stage = UsdStage::Open(path);
+    UsdStageRefPtr stage = _GetOrOpenStage(path);
     if (!stage) {
         return _ErrorResult(path, "Unable to open USD stage");
     }
@@ -731,11 +1010,37 @@ OpenStage(const std::string& path)
     return result;
 }
 
+emscripten::val
+ExtractTransformsAtTime(const std::string& path, double timeCode)
+{
+    emscripten::val transforms = emscripten::val::array();
+    UsdStageRefPtr stage = _GetOrOpenStage(path);
+    if (!stage) {
+        return transforms;
+    }
+
+    UsdGeomXformCache xformCache(timeCode);
+    size_t index = 0;
+
+    for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot())) {
+        if (!prim.IsA<UsdGeomMesh>()) {
+            continue;
+        }
+        emscripten::val entry = emscripten::val::object();
+        entry.set("path", prim.GetPath().GetString());
+        entry.set("matrix", _MatrixArray(xformCache.GetLocalToWorldTransform(prim)));
+        transforms.set(index++, entry);
+    }
+
+    return transforms;
+}
+
 EMSCRIPTEN_BINDINGS(usdWebViewBindings)
 {
     emscripten::function("InitializeRuntime", &InitializeRuntime);
     emscripten::function("GetRuntimeDiagnostics", &GetRuntimeDiagnostics);
     emscripten::function("InspectPrimRelationships", &InspectPrimRelationships);
     emscripten::function("ExtractRenderables", &ExtractRenderables);
+    emscripten::function("ExtractTransformsAtTime", &ExtractTransformsAtTime);
     emscripten::function("OpenStage", &OpenStage);
 }

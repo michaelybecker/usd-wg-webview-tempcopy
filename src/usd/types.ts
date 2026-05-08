@@ -1,4 +1,9 @@
-export type RuntimeState = "idle" | "loading" | "ready" | "unavailable" | "error";
+export type RuntimeState =
+  | "idle"
+  | "loading"
+  | "ready"
+  | "unavailable"
+  | "error";
 
 export type RuntimeStatus = {
   state: RuntimeState;
@@ -32,11 +37,25 @@ export type RenderableMesh = {
 export type RenderableMaterial = {
   path?: string;
   shaderId?: string;
+  // Scalars
   diffuseColor?: number[];
   roughness?: number;
   metallic?: number;
   opacity?: number;
+  emissiveColor?: number[];
+  clearcoat?: number;
+  clearcoatRoughness?: number;
+  ior?: number;
+  // Textures
   diffuseTexture?: RenderableTexture;
+  roughnessTexture?: RenderableTexture;
+  metallicTexture?: RenderableTexture;
+  normalTexture?: RenderableTexture;
+  occlusionTexture?: RenderableTexture;
+  emissiveTexture?: RenderableTexture;
+  clearcoatTexture?: RenderableTexture;
+  clearcoatRoughnessTexture?: RenderableTexture;
+  opacityTexture?: RenderableTexture;
 };
 
 export type RenderableTexture = {
@@ -55,11 +74,18 @@ export type StageLoadResult = {
   renderables?: RenderableMesh[];
 };
 
+export type PrimTransform = {
+  path: string;
+  matrix: number[];
+};
+
 export type UsdWebViewBindings = {
   ready?: Promise<unknown>;
   createDataFile?: (path: string, data: Uint8Array) => void;
   extractRenderables?: (path: string) => RenderableMesh[];
+  extractTransformsAtTime?: (path: string, timeCode: number) => PrimTransform[];
   openStage?: (path: string) => Promise<StageSummary> | StageSummary;
+  inspectPrimRelationships?: (stagePath: string, primPath: string) => unknown;
 };
 
 export type UsdWebViewFactory = (options: {

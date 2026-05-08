@@ -36,7 +36,7 @@ window.UsdWebViewBindings = {
     const module = await createUsdWebViewBindingsModule({
       locateFile(path) {
         return options.locateFile?.(path) ?? path;
-      }
+      },
     });
 
     module.InitializeRuntime();
@@ -49,14 +49,27 @@ window.UsdWebViewBindings = {
         if (module.FS_analyzePath(filePath).exists) {
           module.FS_unlink(filePath);
         }
-        module.FS_createDataFile(dirname(filePath), basename(filePath), data, true, true, true);
+        module.FS_createDataFile(
+          dirname(filePath),
+          basename(filePath),
+          data,
+          true,
+          true,
+          true
+        );
       },
       extractRenderables(path) {
         return module.ExtractRenderables(normalizePath(path));
       },
+      extractTransformsAtTime(path, timeCode) {
+        return module.ExtractTransformsAtTime(normalizePath(path), timeCode);
+      },
       openStage(path) {
         return module.OpenStage(normalizePath(path));
-      }
+      },
+      inspectPrimRelationships(stagePath, primPath) {
+        return module.InspectPrimRelationships(normalizePath(stagePath), primPath);
+      },
     };
-  }
+  },
 };
