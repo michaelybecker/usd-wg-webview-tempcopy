@@ -44,6 +44,7 @@
 #include <emscripten/val.h>
 
 #include <algorithm>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1035,6 +1036,78 @@ ExtractTransformsAtTime(const std::string& path, double timeCode)
     return transforms;
 }
 
+emscripten::val
+GetSceneGraph(const std::string& path)
+{
+    emscripten::val result = emscripten::val::array();
+    UsdStageRefPtr stage = _GetOrOpenStage(path);
+    if (!stage) {
+        return result;
+    }
+
+    size_t index = 0;
+    for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot())) {
+        if (prim.IsPseudoRoot()) {
+            continue;
+        }
+
+        const auto children = prim.GetChildren();
+        emscripten::val item = emscripten::val::object();
+        item.set("path", prim.GetPath().GetString());
+        item.set("name", prim.GetName().GetString());
+        item.set("typeName", prim.GetTypeName().GetString());
+        item.set("depth", static_cast<int>(prim.GetPath().GetPathElementCount()) - 1);
+        item.set("isActive", prim.IsActive());
+        item.set("hasChildren", children.begin() != children.end());
+        result.set(index++, item);
+    }
+
+    return result;
+}
+
+emscripten::val
+GetPrimAttributes(const std::string& stagePath, const std::string& primPath)
+{
+    emscripten::val result = emscripten::val::array();
+    UsdStageRefPtr stage = _GetOrOpenStage(stagePath);
+    if (!stage) {
+        return result;
+    }
+
+    const UsdPrim prim = stage->GetPrimAtPath(SdfPath(primPath));
+    if (!prim) {
+        return result;
+    }
+
+    size_t index = 0;
+    for (const UsdAttribute& attr : prim.GetAttributes()) {
+        emscripten::val item = emscripten::val::object();
+        item.set("name", attr.GetName().GetString());
+        item.set("typeName", attr.GetTypeName().GetAsToken().GetString());
+        item.set("isAuthored", attr.IsAuthored());
+
+        VtValue value;
+        if (attr.Get(&value)) {
+            std::string str;
+            if (value.IsArrayValued() && value.GetArraySize() > 8) {
+                str = "[" + std::to_string(value.GetArraySize()) + " elements]";
+            } else {
+                std::ostringstream oss;
+                oss << value;
+                str = oss.str();
+                if (str.size() > 140) {
+                    str = str.substr(0, 140) + "...";
+                }
+            }
+            item.set("value", str);
+        }
+
+        result.set(index++, item);
+    }
+
+    return result;
+}
+
 EMSCRIPTEN_BINDINGS(usdWebViewBindings)
 {
     emscripten::function("InitializeRuntime", &InitializeRuntime);
@@ -1043,4 +1116,6 @@ EMSCRIPTEN_BINDINGS(usdWebViewBindings)
     emscripten::function("ExtractRenderables", &ExtractRenderables);
     emscripten::function("ExtractTransformsAtTime", &ExtractTransformsAtTime);
     emscripten::function("OpenStage", &OpenStage);
+    emscripten::function("GetSceneGraph", &GetSceneGraph);
+    emscripten::function("GetPrimAttributes", &GetPrimAttributes);
 }

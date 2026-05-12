@@ -79,6 +79,22 @@ export type PrimTransform = {
   matrix: number[];
 };
 
+export type SceneGraphPrim = {
+  path: string;
+  name: string;
+  typeName: string;
+  depth: number;
+  isActive: boolean;
+  hasChildren: boolean;
+};
+
+export type PrimAttribute = {
+  name: string;
+  typeName: string;
+  isAuthored: boolean;
+  value?: string;
+};
+
 export type UsdWebViewBindings = {
   ready?: Promise<unknown>;
   createDataFile?: (path: string, data: Uint8Array) => void;
@@ -86,6 +102,8 @@ export type UsdWebViewBindings = {
   extractTransformsAtTime?: (path: string, timeCode: number) => PrimTransform[];
   openStage?: (path: string) => Promise<StageSummary> | StageSummary;
   inspectPrimRelationships?: (stagePath: string, primPath: string) => unknown;
+  getSceneGraph?: (stagePath: string) => SceneGraphPrim[];
+  getPrimAttributes?: (stagePath: string, primPath: string) => PrimAttribute[];
 };
 
 export type UsdWebViewFactory = (options: {

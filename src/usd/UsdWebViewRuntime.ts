@@ -1,7 +1,9 @@
 import type {
   UsdWebViewBindings,
+  PrimAttribute,
   PrimTransform,
   RuntimeStatus,
+  SceneGraphPrim,
   StageLoadRequest,
   StageLoadResult,
   StageSummary,
@@ -100,6 +102,16 @@ export class UsdWebViewRuntime {
       return [];
     }
     return this.bindings.extractTransformsAtTime(this.currentStagePath, timeCode);
+  }
+
+  getSceneGraph(): SceneGraphPrim[] {
+    if (!this.bindings?.getSceneGraph || !this.currentStagePath) return [];
+    return this.bindings.getSceneGraph(this.currentStagePath);
+  }
+
+  getPrimAttributes(primPath: string): PrimAttribute[] {
+    if (!this.bindings?.getPrimAttributes || !this.currentStagePath) return [];
+    return this.bindings.getPrimAttributes(this.currentStagePath, primPath);
   }
 }
 

@@ -70,6 +70,12 @@ window.UsdWebViewBindings = {
       inspectPrimRelationships(stagePath, primPath) {
         return module.InspectPrimRelationships(normalizePath(stagePath), primPath);
       },
+      getSceneGraph(path) {
+        return module.GetSceneGraph(normalizePath(path));
+      },
+      getPrimAttributes(stagePath, primPath) {
+        return module.GetPrimAttributes(normalizePath(stagePath), primPath);
+      },
     };
   },
 };

@@ -1,7 +1,7 @@
 import "./style.css";
 import { UsdWebViewRuntime } from "./usd/UsdWebViewRuntime";
 import { collectDroppedFiles, pickLikelyRootFile } from "./usd/fileIntake";
-import type { RuntimeStatus, StageSummary } from "./usd/types";
+import type { PrimAttribute, RuntimeStatus, SceneGraphPrim, StageSummary } from "./usd/types";
 import { ThreeViewport } from "./viewer/ThreeViewport";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -11,7 +11,42 @@ if (!app) {
 }
 
 app.innerHTML = `
-  <main class="shell">
+  <main class="shell" id="shell">
+    <nav class="menubar" id="menubar" aria-label="Application menu">
+      <div class="menu-item">
+        <button class="menu-btn">File</button>
+        <ul class="menu-dropdown">
+          <li><button class="menu-option" id="menuOpenFile">Open File…</button></li>
+          <li><button class="menu-option" id="menuOpenFolder">Open Folder…</button></li>
+        </ul>
+      </div>
+      <div class="menu-item">
+        <button class="menu-btn">Edit</button>
+        <ul class="menu-dropdown">
+          <li><button class="menu-option" disabled>Undo</button></li>
+          <li><button class="menu-option" disabled>Redo</button></li>
+        </ul>
+      </div>
+      <div class="menu-item">
+        <button class="menu-btn">View</button>
+        <ul class="menu-dropdown">
+          <li><button class="menu-option" id="menuStats">Stats</button></li>
+        </ul>
+      </div>
+      <div class="menu-item">
+        <button class="menu-btn">?</button>
+        <ul class="menu-dropdown">
+          <li><button class="menu-option" id="menuTutorial">Show Tutorial</button></li>
+        </ul>
+      </div>
+      <input id="filePicker" type="file" multiple accept=".usd,.usda,.usdc,.usdz" style="display:none" />
+      <input id="folderPicker" type="file" webkitdirectory style="display:none" />
+    </nav>
+    <nav class="scene-graph" aria-label="Scene graph">
+      <div class="panel-header">Scene Graph</div>
+      <ol id="sceneGraphList" class="sg-list"></ol>
+      <div class="sg-resize-x" id="sgResizeX"></div>
+    </nav>
     <section class="viewport" aria-label="USD Web View viewport">
       <div class="playbar" id="playbar" hidden>
         <button class="playbar-btn" id="playBtn" aria-label="Play">&#9654;</button>
@@ -22,31 +57,48 @@ app.innerHTML = `
         <span class="playbar-end" id="playbarEnd">0</span>
       </div>
     </section>
-    <aside class="inspector" aria-label="Stage inspector">
-      <div class="brand">
-        <p class="eyebrow">USD Web View</p>
-        <h1>Stage environment</h1>
+    <div class="attr-panel" id="attrPanel">
+      <div class="attr-resize-y" id="attrResizeY"></div>
+      <div class="panel-header">
+        <span>Attributes</span>
+        <span id="attrPrimPath" class="attr-prim-path"></span>
       </div>
-      <div class="panel">
-        <h2>Runtime</h2>
-        <dl id="runtimeStatus" class="status-list"></dl>
+      <div id="attrList" class="attr-list">
+        <p class="sg-empty">Select a prim to inspect</p>
       </div>
-      <div class="panel">
-        <h2>Stage</h2>
-        <dl id="stageSummary" class="status-list"></dl>
-      </div>
-      <div class="file-actions">
-        <label class="file-target" for="filePicker">
-          <span>Open files</span>
-          <input id="filePicker" type="file" multiple accept=".usd,.usda,.usdc,.usdz" />
-        </label>
-        <label class="file-target" for="folderPicker">
-          <span>Open folder</span>
-          <input id="folderPicker" type="file" webkitdirectory />
-        </label>
-      </div>
-    </aside>
+    </div>
   </main>
+  <div class="stats-panel" id="statsPanel" hidden>
+    <div class="stats-header">
+      <span>Stats</span>
+      <button class="stats-close" id="statsClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="stats-body">
+      <p class="stats-section-title">Runtime</p>
+      <dl id="runtimeStatus" class="status-list"></dl>
+      <p class="stats-section-title">Stage</p>
+      <dl id="stageSummary" class="status-list"></dl>
+    </div>
+  </div>
+  <div class="tutorial-overlay" id="tutorialOverlay" hidden>
+    <div class="tutorial-modal">
+      <div class="tutorial-header">
+        <span>Controls</span>
+        <button class="tutorial-close" id="tutorialClose" aria-label="Close">&times;</button>
+      </div>
+      <table class="tutorial-table">
+        <tbody>
+          <tr><td>Left drag</td><td>Orbit camera</td></tr>
+          <tr><td>Right drag / Two-finger</td><td>Pan camera</td></tr>
+          <tr><td>Scroll / Pinch</td><td>Zoom camera</td></tr>
+          <tr><td>F</td><td>Frame selected prim</td></tr>
+          <tr><td>Click mesh</td><td>Select prim</td></tr>
+          <tr><td>Click scene graph item</td><td>Select &amp; highlight prim</td></tr>
+          <tr><td>Drop USD / folder</td><td>Load stage</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
 `;
 
 const viewportElement = app.querySelector<HTMLElement>(".viewport");
@@ -59,6 +111,13 @@ const playBtn = app.querySelector<HTMLButtonElement>("#playBtn");
 const playbarTime = app.querySelector<HTMLElement>("#playbarTime");
 const playbarEnd = app.querySelector<HTMLElement>("#playbarEnd");
 const playbarScrubber = app.querySelector<HTMLInputElement>("#playbarScrubber");
+const sceneGraphList = app.querySelector<HTMLElement>("#sceneGraphList");
+const attrPrimPath = app.querySelector<HTMLElement>("#attrPrimPath");
+const attrList = app.querySelector<HTMLElement>("#attrList");
+const statsPanel = app.querySelector<HTMLElement>("#statsPanel")!;
+const statsClose = app.querySelector<HTMLButtonElement>("#statsClose")!;
+const tutorialOverlay = app.querySelector<HTMLElement>("#tutorialOverlay")!;
+const tutorialClose = app.querySelector<HTMLButtonElement>("#tutorialClose")!;
 
 if (
   !viewportElement ||
@@ -70,7 +129,10 @@ if (
   !playBtn ||
   !playbarTime ||
   !playbarEnd ||
-  !playbarScrubber
+  !playbarScrubber ||
+  !sceneGraphList ||
+  !attrPrimPath ||
+  !attrList
 ) {
   throw new Error("USD Web View UI failed to initialize.");
 }
@@ -165,6 +227,122 @@ playbarScrubber.addEventListener("input", () => {
   }
 });
 
+// --- Scene graph ---
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+let allPrims: SceneGraphPrim[] = [];
+const collapsedNodes = new Set<string>();
+let selectedPrimPath: string | null = null;
+
+function isAncestorCollapsed(path: string): boolean {
+  const parts = path.split("/").filter(Boolean);
+  for (let i = 1; i < parts.length; i++) {
+    if (collapsedNodes.has("/" + parts.slice(0, i).join("/"))) return true;
+  }
+  return false;
+}
+
+function renderPrimItem(p: SceneGraphPrim): string {
+  const indent = 4 + p.depth * 14;
+  const isCollapsed = collapsedNodes.has(p.path);
+  const toggle = p.hasChildren
+    ? `<button class="sg-toggle" data-toggle-path="${escHtml(p.path)}" aria-label="${isCollapsed ? "Expand" : "Collapse"}">` +
+      `<span class="sg-arrow${isCollapsed ? "" : " sg-arrow--open"}"></span></button>`
+    : `<span class="sg-toggle-leaf"></span>`;
+  return (
+    `<li class="sg-item${p.isActive ? "" : " sg-inactive"}" data-path="${escHtml(p.path)}" style="padding-left:${indent}px">` +
+    toggle +
+    `<span class="sg-name">${escHtml(p.name)}</span>` +
+    `<span class="sg-type">${escHtml(p.typeName || "?")}</span>` +
+    `</li>`
+  );
+}
+
+function _renderSceneGraphList(): void {
+  if (!allPrims.length) {
+    sceneGraphList!.innerHTML = '<li class="sg-empty">No prims</li>';
+    return;
+  }
+  sceneGraphList!.innerHTML = allPrims
+    .filter((p) => !isAncestorCollapsed(p.path))
+    .map(renderPrimItem)
+    .join("");
+  if (selectedPrimPath) {
+    sceneGraphList!
+      .querySelector<HTMLElement>(`[data-path="${selectedPrimPath.replace(/"/g, '\\"')}"]`)
+      ?.classList.add("sg-selected");
+  }
+}
+
+function renderSceneGraph(prims: SceneGraphPrim[]): void {
+  allPrims = prims;
+  _renderSceneGraphList();
+}
+
+function clearSceneGraph(): void {
+  allPrims = [];
+  collapsedNodes.clear();
+  selectedPrimPath = null;
+  sceneGraphList!.innerHTML = "";
+  attrList!.innerHTML = '<p class="sg-empty">Select a prim to inspect</p>';
+  attrPrimPath!.textContent = "";
+  viewport.setSelectedPrim(null);
+}
+
+function selectPrimByPath(path: string): void {
+  // Expand any collapsed ancestors so the item is visible
+  const parts = path.split("/").filter(Boolean);
+  let changed = false;
+  for (let i = 1; i < parts.length; i++) {
+    const ancestor = "/" + parts.slice(0, i).join("/");
+    if (collapsedNodes.has(ancestor)) { collapsedNodes.delete(ancestor); changed = true; }
+  }
+  if (changed) _renderSceneGraphList();
+
+  selectedPrimPath = path;
+  sceneGraphList!.querySelectorAll(".sg-item").forEach((el) => el.classList.remove("sg-selected"));
+  const el = sceneGraphList!.querySelector<HTMLElement>(`[data-path="${path.replace(/"/g, '\\"')}"]`);
+  if (el) { el.classList.add("sg-selected"); el.scrollIntoView({ block: "nearest" }); }
+
+  renderAttributes(path, runtime.getPrimAttributes(path));
+  viewport.setSelectedPrim(path);
+}
+
+function renderAttributes(primPath: string, attrs: PrimAttribute[]): void {
+  attrPrimPath!.textContent = primPath;
+  attrList!.innerHTML = attrs.length
+    ? attrs
+        .map(
+          (a) =>
+            `<div class="attr-row${a.isAuthored ? " attr-authored" : ""}">` +
+            `<span class="attr-name">${escHtml(a.name)}</span>` +
+            `<span class="attr-type">${escHtml(a.typeName)}</span>` +
+            `<span class="attr-value">${escHtml(a.value ?? "—")}</span>` +
+            `</div>`
+        )
+        .join("")
+    : '<p class="sg-empty">No attributes</p>';
+}
+
+sceneGraphList!.addEventListener("click", (e) => {
+  const toggleBtn = (e.target as Element).closest<HTMLElement>(".sg-toggle");
+  if (toggleBtn?.dataset.togglePath) {
+    const path = toggleBtn.dataset.togglePath;
+    if (collapsedNodes.has(path)) {
+      collapsedNodes.delete(path);
+    } else {
+      collapsedNodes.add(path);
+    }
+    _renderSceneGraphList();
+    return;
+  }
+  const item = (e.target as Element).closest<HTMLElement>(".sg-item");
+  if (!item?.dataset.path) return;
+  selectPrimByPath(item.dataset.path);
+});
+
 // --- Inspector rendering ---
 function renderRuntimeStatus(status: RuntimeStatus): void {
   runtimeStatusList.innerHTML = renderDefinitionList({
@@ -208,6 +386,70 @@ function renderDefinitionList(values: Record<string, string>): string {
     .join("");
 }
 
+// --- Menubar ---
+const menuItems = Array.from(app.querySelectorAll<HTMLElement>(".menu-item"));
+let activeMenu: HTMLElement | null = null;
+let menuClickActive = false;
+
+function openMenu(item: HTMLElement): void {
+  activeMenu?.classList.remove("menu-open");
+  activeMenu = item;
+  item.classList.add("menu-open");
+}
+
+function closeMenus(): void {
+  activeMenu?.classList.remove("menu-open");
+  activeMenu = null;
+  menuClickActive = false;
+}
+
+for (const item of menuItems) {
+  const btn = item.querySelector<HTMLButtonElement>(".menu-btn");
+  if (!btn) continue;
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (activeMenu === item && menuClickActive) {
+      closeMenus();
+    } else {
+      openMenu(item);
+      menuClickActive = true;
+    }
+  });
+  btn.addEventListener("mouseenter", () => {
+    if (menuClickActive && activeMenu !== item) openMenu(item);
+  });
+}
+
+document.addEventListener("click", () => closeMenus());
+
+app.querySelector("#menuOpenFile")?.addEventListener("click", () => {
+  filePicker.click();
+});
+
+app.querySelector("#menuOpenFolder")?.addEventListener("click", () => {
+  folderPicker.click();
+});
+
+app.querySelector("#menuStats")?.addEventListener("click", () => {
+  statsPanel.hidden = !statsPanel.hidden;
+});
+
+statsClose.addEventListener("click", () => {
+  statsPanel.hidden = true;
+});
+
+app.querySelector("#menuTutorial")?.addEventListener("click", () => {
+  tutorialOverlay.hidden = false;
+});
+
+tutorialClose.addEventListener("click", () => {
+  tutorialOverlay.hidden = true;
+});
+
+tutorialOverlay.addEventListener("click", (e) => {
+  if (e.target === tutorialOverlay) tutorialOverlay.hidden = true;
+});
+
 // --- Boot + file loading ---
 async function boot(): Promise<void> {
   renderRuntimeStatus(runtime.status);
@@ -238,6 +480,7 @@ async function loadFiles(files: File[]): Promise<void> {
   }
 
   hidePlaybar();
+  clearSceneGraph();
   viewportElement!.classList.remove("has-stage");
 
   const rootFile = pickLikelyRootFile(files);
@@ -253,6 +496,7 @@ async function loadFiles(files: File[]): Promise<void> {
   renderRuntimeStatus(runtime.status);
   renderStageSummary(result.summary);
   viewport.renderStage(result.renderables ?? [], result.summary);
+  renderSceneGraph(runtime.getSceneGraph());
   viewportElement!.classList.add("has-stage");
 
   if (result.summary) {
@@ -287,6 +531,89 @@ viewportElement.addEventListener("drop", async (event) => {
   viewportElement.classList.remove("is-dragging");
   const files = await collectDroppedFiles(event);
   await loadFiles(files);
+});
+
+// --- Keyboard shortcuts ---
+document.addEventListener("keydown", (e) => {
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+  if ((e.key === "f" || e.key === "F") && selectedPrimPath) {
+    viewport.framePrim(selectedPrimPath);
+  }
+  if (e.key === "Escape") {
+    closeMenus();
+    statsPanel.hidden = true;
+    tutorialOverlay.hidden = true;
+  }
+});
+
+// --- Viewport pick on click (distinguish from orbit drag) ---
+let pickMouseStart: { x: number; y: number } | null = null;
+
+viewportElement.addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;
+  pickMouseStart = { x: e.clientX, y: e.clientY };
+});
+
+viewportElement.addEventListener("mouseup", (e) => {
+  if (e.button !== 0 || !pickMouseStart) return;
+  const dx = e.clientX - pickMouseStart.x;
+  const dy = e.clientY - pickMouseStart.y;
+  pickMouseStart = null;
+  if (dx * dx + dy * dy > 16) return; // was a drag
+  const path = viewport.pickPrim(e.clientX, e.clientY);
+  if (path) {
+    selectPrimByPath(path);
+  } else {
+    // click on empty space — deselect
+    selectedPrimPath = null;
+    sceneGraphList!.querySelectorAll(".sg-item").forEach((el) => el.classList.remove("sg-selected"));
+    attrList!.innerHTML = '<p class="sg-empty">Select a prim to inspect</p>';
+    attrPrimPath!.textContent = "";
+    viewport.setSelectedPrim(null);
+  }
+});
+
+// --- Docked panel resize ---
+const shell = app.querySelector<HTMLElement>("#shell")!;
+const sgResizeX = app.querySelector<HTMLElement>("#sgResizeX")!;
+const attrResizeY = app.querySelector<HTMLElement>("#attrResizeY")!;
+
+let sgDrag: { startX: number; startW: number } | null = null;
+let attrDrag: { startY: number; startH: number } | null = null;
+
+sgResizeX.addEventListener("mousedown", (e) => {
+  sgDrag = {
+    startX: e.clientX,
+    startW: parseInt(shell.style.getPropertyValue("--sg-w") || "240"),
+  };
+  document.body.style.cursor = "col-resize";
+  e.preventDefault();
+});
+
+attrResizeY.addEventListener("mousedown", (e) => {
+  attrDrag = {
+    startY: e.clientY,
+    startH: parseInt(shell.style.getPropertyValue("--attr-h") || "200"),
+  };
+  document.body.style.cursor = "row-resize";
+  e.preventDefault();
+});
+
+document.addEventListener("mousemove", (e) => {
+  if (sgDrag) {
+    const w = Math.max(140, Math.min(600, sgDrag.startW + e.clientX - sgDrag.startX));
+    shell.style.setProperty("--sg-w", `${w}px`);
+  }
+  if (attrDrag) {
+    const h = Math.max(60, Math.min(600, attrDrag.startH + attrDrag.startY - e.clientY));
+    shell.style.setProperty("--attr-h", `${h}px`);
+  }
+});
+
+document.addEventListener("mouseup", () => {
+  if (sgDrag || attrDrag) document.body.style.cursor = "";
+  sgDrag = null;
+  attrDrag = null;
 });
 
 void boot();

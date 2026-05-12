@@ -12,17 +12,27 @@ import {
   Mesh,
   MeshPhysicalMaterial,
   PerspectiveCamera,
+  Raycaster,
   Scene,
   SRGBColorSpace,
   LinearSRGBColorSpace,
   TextureLoader,
   Texture,
+  Vector2,
   Vector3,
   WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { PrimTransform, RenderableMesh, RenderableTexture, StageSummary } from "../usd/types";
+
+interface FrameAnim {
+  startPos: Vector3;
+  startTarget: Vector3;
+  endPos: Vector3;
+  endTarget: Vector3;
+  t: number; // 0 → 1
+}
 
 export class ThreeViewport {
   private readonly camera: PerspectiveCamera;
@@ -33,7 +43,11 @@ export class ThreeViewport {
   private readonly textureLoader = new TextureLoader();
   private readonly textureUrls: string[] = [];
   private readonly meshByPath = new Map<string, Mesh>();
+  private readonly pathByMesh = new Map<Mesh, string>();
+  private readonly highlightedMeshes = new Set<Mesh>();
+  private readonly raycaster = new Raycaster();
   private animationFrame = 0;
+  private frameAnim: FrameAnim | null = null;
   private readonly resizeObserver: ResizeObserver;
 
   constructor(private readonly host: HTMLElement) {
@@ -68,6 +82,7 @@ export class ThreeViewport {
   start(onTick?: () => void): void {
     const render = () => {
       onTick?.();
+      this.tickFrameAnim();
       this.controls.update();
       this.renderer.render(this.scene, this.camera);
       this.animationFrame = window.requestAnimationFrame(render);
@@ -165,6 +180,7 @@ export class ThreeViewport {
       const mesh = new Mesh(geometry, material);
       mesh.name = renderable.name || renderable.path;
       this.meshByPath.set(renderable.path, mesh);
+      this.pathByMesh.set(mesh, renderable.path);
 
       if (renderable.matrix.length === 16) {
         mesh.matrix.set(
@@ -195,6 +211,8 @@ export class ThreeViewport {
 
   private clearStage(): void {
     this.meshByPath.clear();
+    this.pathByMesh.clear();
+    this.highlightedMeshes.clear();
     this.revokeTextureUrls();
     this.stageRoot.rotation.set(0, 0, 0);
     this.stageRoot.traverse((object) => {
@@ -253,23 +271,110 @@ export class ThreeViewport {
     this.textureUrls.length = 0;
   }
 
-  private frameStage(): void {
-    const box = new Box3().setFromObject(this.stageRoot);
-    const size = new Vector3();
-    const center = new Vector3();
-    box.getSize(size);
-    box.getCenter(center);
+  pickPrim(clientX: number, clientY: number): string | null {
+    const rect = this.host.getBoundingClientRect();
+    const ndc = new Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const hits = this.raycaster.intersectObjects(this.stageRoot.children, true);
+    for (const hit of hits) {
+      if (hit.object instanceof Mesh) {
+        const path = this.pathByMesh.get(hit.object);
+        if (path) return path;
+      }
+    }
+    return null;
+  }
 
-    const maxSize = Math.max(size.x, size.y, size.z, 1);
-    const distance = maxSize * 3;
-    this.controls.target.copy(center);
-    this.camera.position
-      .copy(center)
-      .add(new Vector3(distance, distance * 0.65, distance));
-    this.camera.near = Math.max(distance / 100, 0.01);
+  setSelectedPrim(primPath: string | null): void {
+    for (const mesh of this.highlightedMeshes) {
+      this.clearHighlight(mesh);
+    }
+    this.highlightedMeshes.clear();
+    if (!primPath) return;
+    const prefix = primPath + "/";
+    for (const [path, mesh] of this.meshByPath) {
+      if (path === primPath || path.startsWith(prefix)) {
+        this.applyHighlight(mesh);
+        this.highlightedMeshes.add(mesh);
+      }
+    }
+  }
+
+  private applyHighlight(mesh: Mesh): void {
+    const mat = mesh.material as MeshPhysicalMaterial;
+    if (!mesh.userData.selEmissive) {
+      mesh.userData.selEmissive = mat.emissive.clone();
+    }
+    mat.emissive.set(0x3d1a00); // warm amber, visible on most materials
+    mat.needsUpdate = true;
+  }
+
+  private clearHighlight(mesh: Mesh): void {
+    const mat = mesh.material as MeshPhysicalMaterial;
+    if (mesh.userData.selEmissive) {
+      mat.emissive.copy(mesh.userData.selEmissive);
+      mesh.userData.selEmissive = null;
+      mat.needsUpdate = true;
+    }
+  }
+
+  framePrim(primPath: string): void {
+    const box = new Box3();
+    const prefix = primPath + "/";
+    for (const [path, mesh] of this.meshByPath) {
+      if (path === primPath || path.startsWith(prefix)) {
+        box.expandByObject(mesh);
+      }
+    }
+    if (box.isEmpty()) return;
+    this.animateToBox(box, true);
+  }
+
+  private tickFrameAnim(): void {
+    const a = this.frameAnim;
+    if (!a) return;
+    // ~18 frames at 60fps ≈ 300ms ease-out
+    a.t = Math.min(1, a.t + 0.055);
+    const ease = 1 - Math.pow(1 - a.t, 3);
+    this.camera.position.lerpVectors(a.startPos, a.endPos, ease);
+    this.controls.target.lerpVectors(a.startTarget, a.endTarget, ease);
+    if (a.t >= 1) this.frameAnim = null;
+  }
+
+  private animateToBox(box: Box3, keepDirection: boolean): void {
+    const center = new Vector3();
+    const size = new Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+    const maxSize = Math.max(size.x, size.y, size.z, 0.001);
+    const fovRad = (this.camera.fov * Math.PI) / 180;
+    const distance = (maxSize * 0.5) / Math.tan(fovRad * 0.5) * 1.6;
+
+    const dir = keepDirection
+      ? this.camera.position.clone().sub(this.controls.target).normalize()
+      : new Vector3(1, 0.65, 1).normalize();
+
+    const endPos = center.clone().addScaledVector(dir, distance);
+    this.camera.near = Math.max(distance / 100, 0.001);
     this.camera.far = distance * 100;
     this.camera.updateProjectionMatrix();
-    this.controls.update();
+
+    this.frameAnim = {
+      startPos: this.camera.position.clone(),
+      startTarget: this.controls.target.clone(),
+      endPos,
+      endTarget: center,
+      t: 0,
+    };
+  }
+
+  private frameStage(): void {
+    const box = new Box3().setFromObject(this.stageRoot);
+    if (box.isEmpty()) return;
+    this.animateToBox(box, false);
   }
 
   private resize(): void {
