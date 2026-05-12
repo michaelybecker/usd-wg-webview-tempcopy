@@ -11,6 +11,19 @@ USD Web View is a browser-based OpenUSD inspection and rendering environment. It
 - **Stage summary** — prim count, layer count, fps, time range, up axis
 - **USD 26 compatibility** — works with older USDZ files that authored `material:binding` before `UsdShadeMaterialBindingAPI` became a formal applied-API schema
 
+## Planned Features
+
+The following are scoped and in-progress. Features marked **[WASM]** require a C++ rebuild of the bindings; **[lib]** require a new JS dependency.
+
+| # | Feature | Notes |
+|---|---------|-------|
+| 1 | **Variant sets** — read and select USD variant sets | Shown as `V` badge in scene graph; dropdown selector in attributes panel; re-renders on change. **[WASM]** |
+| 2 | **Payloads** — per-prim load/unload + global load/unload all | `P` badge (grey = unloaded, green = loaded); right-click context menu on prim; View > Load/Unload All. **[WASM]** |
+| 3 | **Gaussian Splat support** — drop `.splat`/`.ply`/`.spz` files | Rendered via SparkJS alongside the Three.js scene; USD asset-reference path is future scope. **[lib]** |
+| 4 | **Wireframe** — quad-based, artist-friendly topology | Reconstructed from USD `faceVertexCounts` / `faceVertexIndices` (not triangulated diagonals); toggled from View menu. **[WASM]** |
+| 5 | **Unlit view** — flat/unlit shading mode | Swaps `MeshPhysicalMaterial` → `MeshBasicMaterial` preserving color + textures; toggled from View menu. |
+| 6 | **Viewport orientation gizmo** — Unity-style 3D axis cube | Uses Three.js `ViewHelper`; renders in viewport corner; click a face to snap camera. |
+
 ## Architecture
 
 ```
