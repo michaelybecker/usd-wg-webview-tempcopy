@@ -1,4 +1,5 @@
 node_modules/
+public/testAssets/
 dist/
 build/
 .DS_Store
