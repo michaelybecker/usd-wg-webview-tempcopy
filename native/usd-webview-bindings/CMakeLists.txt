@@ -52,7 +52,6 @@ target_link_libraries(usdWebViewBindingsModule
 
 install(
     FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/usdWebViewBindings.js
         ${CMAKE_CURRENT_BINARY_DIR}/usdWebViewBindingsModule.js
         ${CMAKE_CURRENT_BINARY_DIR}/usdWebViewBindingsModule.wasm
     DESTINATION

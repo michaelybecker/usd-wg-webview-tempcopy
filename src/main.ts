@@ -35,10 +35,16 @@ app.innerHTML = `
         <h2>Stage</h2>
         <dl id="stageSummary" class="status-list"></dl>
       </div>
-      <label class="file-target" for="filePicker">
-        <span>Open USD files</span>
-        <input id="filePicker" type="file" multiple accept=".usd,.usda,.usdc,.usdz" />
-      </label>
+      <div class="file-actions">
+        <label class="file-target" for="filePicker">
+          <span>Open files</span>
+          <input id="filePicker" type="file" multiple accept=".usd,.usda,.usdc,.usdz" />
+        </label>
+        <label class="file-target" for="folderPicker">
+          <span>Open folder</span>
+          <input id="folderPicker" type="file" webkitdirectory />
+        </label>
+      </div>
     </aside>
   </main>
 `;
@@ -47,6 +53,7 @@ const viewportElement = app.querySelector<HTMLElement>(".viewport");
 const runtimeStatusElement = app.querySelector<HTMLElement>("#runtimeStatus");
 const stageSummaryElement = app.querySelector<HTMLElement>("#stageSummary");
 const filePicker = app.querySelector<HTMLInputElement>("#filePicker");
+const folderPicker = app.querySelector<HTMLInputElement>("#folderPicker");
 const playbar = app.querySelector<HTMLElement>("#playbar");
 const playBtn = app.querySelector<HTMLButtonElement>("#playBtn");
 const playbarTime = app.querySelector<HTMLElement>("#playbarTime");
@@ -58,6 +65,7 @@ if (
   !runtimeStatusElement ||
   !stageSummaryElement ||
   !filePicker ||
+  !folderPicker ||
   !playbar ||
   !playBtn ||
   !playbarTime ||
@@ -259,6 +267,10 @@ async function loadFiles(files: File[]): Promise<void> {
 
 filePicker.addEventListener("change", () => {
   void loadFiles(Array.from(filePicker.files ?? []));
+});
+
+folderPicker.addEventListener("change", () => {
+  void loadFiles(Array.from(folderPicker.files ?? []));
 });
 
 viewportElement.addEventListener("dragover", (event) => {

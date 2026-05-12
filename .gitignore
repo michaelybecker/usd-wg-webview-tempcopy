@@ -7,3 +7,5 @@ build/
 .env.local
 .env.*.local
 docs/private/
+.vscode/
+package-lock.json

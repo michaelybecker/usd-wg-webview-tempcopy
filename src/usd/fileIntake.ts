@@ -1,5 +1,14 @@
 const USD_EXTENSIONS = new Set(["usd", "usda", "usdc", "usdz"]);
 
+// Names that conventionally identify a USD assembly/root layer.
+const ROOT_NAME_KEYWORDS = [
+  "root", "scene", "world", "main", "stage", "master", "assembly", "all", "top",
+];
+
+// Prefer generic .usd (assembly wrapper) over text .usda over binary .usdc.
+// .usdz is a package, not typically a root reference target, so ranks last.
+const EXTENSION_RANK: Record<string, number> = { usd: 3, usda: 2, usdc: 1, usdz: 0 };
+
 export async function collectDroppedFiles(event: DragEvent): Promise<File[]> {
   const items = Array.from(event.dataTransfer?.items ?? []);
 
@@ -26,19 +35,52 @@ export async function collectDroppedFiles(event: DragEvent): Promise<File[]> {
 }
 
 export function pickLikelyRootFile(files: File[]): File | undefined {
-  const usdFiles = files.filter(isUsdFile).sort(compareFilesForRoot);
-  const usdaFile = usdFiles.find((file) => extensionOf(file.name) === "usda");
-  return usdaFile ?? usdFiles[0] ?? files[0];
+  const usdFiles = files.filter(isUsdFile);
+  if (!usdFiles.length) return files[0];
+
+  // Work only among the shallowest USD files — deeper files are payloads/assets.
+  const minDepth = Math.min(...usdFiles.map(depthOf));
+  const candidates = usdFiles.filter((f) => depthOf(f) === minDepth);
+
+  // Rule 1: single USD file at the root level — unambiguous.
+  if (candidates.length === 1) return candidates[0];
+
+  // Rule 2: filename (sans extension) matches its immediate parent folder name.
+  // e.g. kitchen_set/kitchen_set.usd  →  strong assembly signal.
+  const folderMatch = candidates.find(fileMatchesFolderName);
+  if (folderMatch) return folderMatch;
+
+  // Rule 3: keyword name > extension preference > alphabetical.
+  return [...candidates].sort(compareByConvention)[0];
 }
 
-function compareFilesForRoot(a: File, b: File): number {
-  const aPath = pathOf(a);
-  const bPath = pathOf(b);
-  const depthDiff = aPath.split("/").length - bPath.split("/").length;
-  if (depthDiff !== 0) {
-    return depthDiff;
-  }
-  return aPath.localeCompare(bPath);
+function depthOf(file: File): number {
+  return pathOf(file).split("/").length;
+}
+
+function fileMatchesFolderName(file: File): boolean {
+  const parts = pathOf(file).split("/");
+  if (parts.length < 2) return false;
+  const folderName = parts[parts.length - 2].toLowerCase();
+  const baseName = parts[parts.length - 1].replace(/\.[^.]+$/, "").toLowerCase();
+  return baseName === folderName;
+}
+
+function rootKeywordScore(file: File): number {
+  const base = file.name.replace(/\.[^.]+$/, "").toLowerCase();
+  const idx = ROOT_NAME_KEYWORDS.indexOf(base);
+  // indexOf returns -1 when absent; we flip sign so higher = better matches sort first.
+  return idx === -1 ? -1 : ROOT_NAME_KEYWORDS.length - idx;
+}
+
+function compareByConvention(a: File, b: File): number {
+  const keywordDiff = rootKeywordScore(b) - rootKeywordScore(a);
+  if (keywordDiff !== 0) return keywordDiff;
+
+  const extDiff = (EXTENSION_RANK[extensionOf(b.name)] ?? 0) - (EXTENSION_RANK[extensionOf(a.name)] ?? 0);
+  if (extDiff !== 0) return extDiff;
+
+  return pathOf(a).localeCompare(pathOf(b));
 }
 
 function isUsdFile(file: File): boolean {

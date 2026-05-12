@@ -140,11 +140,17 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+.file-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: auto;
+}
+
 .file-target {
   display: grid;
   place-items: center;
-  min-height: 92px;
-  margin-top: auto;
+  min-height: 72px;
   border: 1px dashed rgb(255 255 255 / 28%);
   border-radius: 8px;
   color: #fff7e3;
