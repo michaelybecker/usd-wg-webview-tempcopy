@@ -1066,7 +1066,7 @@ GetSceneGraph(const std::string& path)
         item.set("hasChildren", children.begin() != children.end());
         item.set("hasVariantSets", !prim.GetVariantSets().GetNames().empty());
         item.set("hasPayloads", prim.HasPayload());
-        item.set("isPayloadLoaded", stage->IsLoaded(prim.GetPath()));
+        item.set("isPayloadLoaded", prim.IsLoaded());
         result.set(index++, item);
     }
 
@@ -1207,7 +1207,8 @@ SetPayloadLoaded(
     } else {
         stage->Unload(path);
     }
-    return stage->IsLoaded(path) == loaded;
+    const UsdPrim prim = stage->GetPrimAtPath(path);
+    return prim && prim.IsLoaded() == loaded;
 }
 
 EMSCRIPTEN_BINDINGS(usdWebViewBindings)
