@@ -2,6 +2,7 @@ import type {
   UsdWebViewBindings,
   PrimAttribute,
   PrimTransform,
+  RenderableMesh,
   RuntimeStatus,
   SceneGraphPrim,
   StageLoadRequest,
@@ -112,6 +113,21 @@ export class UsdWebViewRuntime {
   getPrimAttributes(primPath: string): PrimAttribute[] {
     if (!this.bindings?.getPrimAttributes || !this.currentStagePath) return [];
     return this.bindings.getPrimAttributes(this.currentStagePath, primPath);
+  }
+
+  extractRenderables(): RenderableMesh[] {
+    if (!this.bindings?.extractRenderables || !this.currentStagePath) return [];
+    return this.bindings.extractRenderables(this.currentStagePath);
+  }
+
+  setVariantSelection(primPath: string, variantSetName: string, selection: string): boolean {
+    if (!this.bindings?.setVariantSelection || !this.currentStagePath) return false;
+    return this.bindings.setVariantSelection(this.currentStagePath, primPath, variantSetName, selection);
+  }
+
+  setPayloadLoaded(primPath: string, loaded: boolean): boolean {
+    if (!this.bindings?.setPayloadLoaded || !this.currentStagePath) return false;
+    return this.bindings.setPayloadLoaded(this.currentStagePath, primPath, loaded);
   }
 }
 

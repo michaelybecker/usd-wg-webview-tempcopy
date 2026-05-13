@@ -86,6 +86,9 @@ export type SceneGraphPrim = {
   depth: number;
   isActive: boolean;
   hasChildren: boolean;
+  hasVariantSets?: boolean;
+  hasPayloads?: boolean;
+  isPayloadLoaded?: boolean;
 };
 
 export type PrimAttribute = {
@@ -93,6 +96,7 @@ export type PrimAttribute = {
   typeName: string;
   isAuthored: boolean;
   value?: string;
+  variantOptions?: string[]; // defined when typeName === "variantSet"
 };
 
 export type UsdWebViewBindings = {
@@ -104,6 +108,8 @@ export type UsdWebViewBindings = {
   inspectPrimRelationships?: (stagePath: string, primPath: string) => unknown;
   getSceneGraph?: (stagePath: string) => SceneGraphPrim[];
   getPrimAttributes?: (stagePath: string, primPath: string) => PrimAttribute[];
+  setVariantSelection?: (stagePath: string, primPath: string, variantSetName: string, selection: string) => boolean;
+  setPayloadLoaded?: (stagePath: string, primPath: string, loaded: boolean) => boolean;
 };
 
 export type UsdWebViewFactory = (options: {

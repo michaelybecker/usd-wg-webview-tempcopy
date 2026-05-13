@@ -18,14 +18,19 @@
 #include "pxr/usd/sdf/layer.h"
 #include "pxr/usd/sdf/fileFormat.h"
 #include "pxr/usd/sdf/assetPath.h"
+#include "pxr/usd/sdf/primSpec.h"
 #include "pxr/usd/sdf/relationshipSpec.h"
+#include "pxr/usd/sdf/schema.h"
 #include "pxr/usd/sdf/usdzFileFormat.h"
+#include "pxr/base/vt/dictionary.h"
 #include "pxr/usd/sdf/usdzResolver.h"
 #include "pxr/usd/usd/attribute.h"
+#include "pxr/usd/usd/editContext.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/primRange.h"
 #include "pxr/usd/usd/relationship.h"
 #include "pxr/usd/usd/stage.h"
+#include "pxr/usd/usd/variantSets.h"
 #include "pxr/usd/usdGeom/gprim.h"
 #include "pxr/usd/usdGeom/metrics.h"
 #include "pxr/usd/usdGeom/mesh.h"
@@ -1059,6 +1064,9 @@ GetSceneGraph(const std::string& path)
         item.set("depth", static_cast<int>(prim.GetPath().GetPathElementCount()) - 1);
         item.set("isActive", prim.IsActive());
         item.set("hasChildren", children.begin() != children.end());
+        item.set("hasVariantSets", !prim.GetVariantSets().GetNames().empty());
+        item.set("hasPayloads", prim.HasPayload());
+        item.set("isPayloadLoaded", stage->IsLoaded(prim.GetPath()));
         result.set(index++, item);
     }
 
@@ -1105,7 +1113,101 @@ GetPrimAttributes(const std::string& stagePath, const std::string& primPath)
         result.set(index++, item);
     }
 
+    // Append variant sets as pseudo-attributes at the end
+    const UsdVariantSets variantSets = prim.GetVariantSets();
+    for (const std::string& vsName : variantSets.GetNames()) {
+        const UsdVariantSet vs = variantSets.GetVariantSet(vsName);
+        emscripten::val item = emscripten::val::object();
+        item.set("name", vsName);
+        item.set("typeName", std::string("variantSet"));
+        item.set("isAuthored", true);
+        item.set("value", vs.GetVariantSelection());
+
+        const std::vector<std::string> variantNames = vs.GetVariantNames();
+        emscripten::val options = emscripten::val::array();
+        for (size_t i = 0; i < variantNames.size(); ++i) {
+            options.set(i, variantNames[i]);
+        }
+        item.set("variantOptions", options);
+
+        result.set(index++, item);
+    }
+
     return result;
+}
+
+bool
+ReopenStage(const std::string& stagePath)
+{
+    SdfLayerHandle layer = SdfLayer::Find(stagePath);
+
+    if (layer && g_stageCache.count(stagePath)) {
+        // Fast path: reload fires SdfNotice::LayersDidChange to the living
+        // stage. USD's PCP change-processing recomposes only the prim subtrees
+        // whose fields actually changed (e.g. one VariantSelection field) —
+        // not the whole stage. For large scenes this is orders of magnitude
+        // cheaper than a full UsdStage::Open.
+        layer->Reload(/* force= */ true);
+        return true;
+    }
+
+    // Slow path: stage not yet cached or layer not in registry.
+    // Reload first so UsdStage::Open reads the updated VFS content.
+    if (layer) {
+        layer->Reload(/* force= */ true);
+    }
+    g_stageCache.erase(stagePath);
+    UsdStageRefPtr newStage = UsdStage::Open(stagePath);
+    if (!newStage) return false;
+    g_stageCache[stagePath] = newStage;
+    return true;
+}
+
+bool
+SetVariantSelection(
+    const std::string& stagePath,
+    const std::string& primPath,
+    const std::string& variantSetName,
+    const std::string& selection)
+{
+    UsdStageRefPtr stage = _GetOrOpenStage(stagePath);
+    if (!stage) return false;
+
+    const UsdPrim prim = stage->GetPrimAtPath(SdfPath(primPath));
+    if (!prim) return false;
+
+    UsdVariantSet vs = prim.GetVariantSets().GetVariantSet(variantSetName);
+    if (!vs.IsValid()) return false;
+
+    // Write the selection into the session layer (strongest arc, fully
+    // in-memory). Unlike root-layer edits this does not touch the VFS,
+    // sidestepping the MEMFS write restrictions that broke earlier attempts.
+    // Verify by reading back rather than trusting the return value — WASM
+    // TfType/RTTI issues can cause SetVariantSelection to report false even
+    // when the write succeeded.
+    {
+        UsdEditContext ctx(stage, stage->GetSessionLayer());
+        vs.SetVariantSelection(selection);
+    }
+    return vs.GetVariantSelection() == selection;
+}
+
+bool
+SetPayloadLoaded(
+    const std::string& stagePath,
+    const std::string& primPath,
+    bool loaded)
+{
+    UsdStageRefPtr stage = _GetOrOpenStage(stagePath);
+    if (!stage) return false;
+
+    const SdfPath path(primPath);
+    if (loaded) {
+        stage->Load(path);
+    } else {
+        stage->Unload(path);
+    }
+    return stage->IsLoaded(path) == loaded;
 }
 
 EMSCRIPTEN_BINDINGS(usdWebViewBindings)
@@ -1118,4 +1220,7 @@ EMSCRIPTEN_BINDINGS(usdWebViewBindings)
     emscripten::function("OpenStage", &OpenStage);
     emscripten::function("GetSceneGraph", &GetSceneGraph);
     emscripten::function("GetPrimAttributes", &GetPrimAttributes);
+    emscripten::function("ReopenStage", &ReopenStage);
+    emscripten::function("SetVariantSelection", &SetVariantSelection);
+    emscripten::function("SetPayloadLoaded", &SetPayloadLoaded);
 }

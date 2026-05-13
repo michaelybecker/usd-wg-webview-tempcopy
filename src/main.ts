@@ -2,6 +2,8 @@ import "./style.css";
 import { UsdWebViewRuntime } from "./usd/UsdWebViewRuntime";
 import { collectDroppedFiles, pickLikelyRootFile } from "./usd/fileIntake";
 import type { PrimAttribute, RuntimeStatus, SceneGraphPrim, StageSummary } from "./usd/types";
+
+let lastStageSummary: StageSummary | null = null;
 import { ThreeViewport } from "./viewer/ThreeViewport";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -95,6 +97,7 @@ app.innerHTML = `
           <tr><td>Click mesh</td><td>Select prim</td></tr>
           <tr><td>Click scene graph item</td><td>Select &amp; highlight prim</td></tr>
           <tr><td>Drop USD / folder</td><td>Load stage</td></tr>
+          <tr><td>Variant select</td><td>Switch USD variant, live re-render</td></tr>
         </tbody>
       </table>
     </div>
@@ -251,10 +254,20 @@ function renderPrimItem(p: SceneGraphPrim): string {
     ? `<button class="sg-toggle" data-toggle-path="${escHtml(p.path)}" aria-label="${isCollapsed ? "Expand" : "Collapse"}">` +
       `<span class="sg-arrow${isCollapsed ? "" : " sg-arrow--open"}"></span></button>`
     : `<span class="sg-toggle-leaf"></span>`;
+  const variantBadge = p.hasVariantSets
+    ? `<span class="sg-badge sg-badge--variant" title="Has variant sets">V</span>`
+    : "";
+  const payloadBtn = p.hasPayloads
+    ? `<button class="sg-badge sg-badge--payload${p.isPayloadLoaded ? " sg-badge--payload-loaded" : ""}" ` +
+      `data-payload-path="${escHtml(p.path)}" data-payload-loaded="${p.isPayloadLoaded ? "1" : "0"}" ` +
+      `title="${p.isPayloadLoaded ? "Unload payload" : "Load payload"}">P</button>`
+    : "";
   return (
     `<li class="sg-item${p.isActive ? "" : " sg-inactive"}" data-path="${escHtml(p.path)}" style="padding-left:${indent}px">` +
     toggle +
     `<span class="sg-name">${escHtml(p.name)}</span>` +
+    variantBadge +
+    payloadBtn +
     `<span class="sg-type">${escHtml(p.typeName || "?")}</span>` +
     `</li>`
   );
@@ -313,18 +326,53 @@ function selectPrimByPath(path: string): void {
 function renderAttributes(primPath: string, attrs: PrimAttribute[]): void {
   attrPrimPath!.textContent = primPath;
   attrList!.innerHTML = attrs.length
-    ? attrs
-        .map(
-          (a) =>
-            `<div class="attr-row${a.isAuthored ? " attr-authored" : ""}">` +
+    ? attrs.map((a) => {
+        if (a.typeName === "variantSet" && a.variantOptions) {
+          const opts = a.variantOptions
+            .map((o) => `<option value="${escHtml(o)}"${o === a.value ? " selected" : ""}>${escHtml(o)}</option>`)
+            .join("");
+          return (
+            `<div class="attr-row attr-authored">` +
             `<span class="attr-name">${escHtml(a.name)}</span>` +
-            `<span class="attr-type">${escHtml(a.typeName)}</span>` +
-            `<span class="attr-value">${escHtml(a.value ?? "—")}</span>` +
+            `<span class="attr-type">variantSet</span>` +
+            `<select class="attr-variant-select" data-primpath="${escHtml(primPath)}" data-variantset="${escHtml(a.name)}">${opts}</select>` +
             `</div>`
-        )
-        .join("")
+          );
+        }
+        return (
+          `<div class="attr-row${a.isAuthored ? " attr-authored" : ""}">` +
+          `<span class="attr-name">${escHtml(a.name)}</span>` +
+          `<span class="attr-type">${escHtml(a.typeName)}</span>` +
+          `<span class="attr-value">${escHtml(a.value ?? "—")}</span>` +
+          `</div>`
+        );
+      }).join("")
     : '<p class="sg-empty">No attributes</p>';
 }
+
+function applyVariantChange(): void {
+  const renderables = runtime.extractRenderables();
+  viewport.updateRenderables(renderables);
+  const newPrims = runtime.getSceneGraph();
+  renderSceneGraph(newPrims);
+  if (selectedPrimPath) {
+    if (newPrims.some((p) => p.path === selectedPrimPath)) {
+      viewport.setSelectedPrim(selectedPrimPath);
+      renderAttributes(selectedPrimPath, runtime.getPrimAttributes(selectedPrimPath));
+    } else {
+      selectedPrimPath = null;
+      attrList!.innerHTML = '<p class="sg-empty">Select a prim to inspect</p>';
+      attrPrimPath!.textContent = "";
+    }
+  }
+}
+
+attrList!.addEventListener("change", (e) => {
+  const select = (e.target as Element).closest<HTMLSelectElement>(".attr-variant-select");
+  if (!select) return;
+  runtime.setVariantSelection(select.dataset.primpath!, select.dataset.variantset!, select.value);
+  applyVariantChange();
+});
 
 sceneGraphList!.addEventListener("click", (e) => {
   const toggleBtn = (e.target as Element).closest<HTMLElement>(".sg-toggle");
@@ -338,6 +386,17 @@ sceneGraphList!.addEventListener("click", (e) => {
     _renderSceneGraphList();
     return;
   }
+
+  const payloadBtn = (e.target as Element).closest<HTMLElement>(".sg-badge--payload");
+  if (payloadBtn?.dataset.payloadPath) {
+    e.stopPropagation();
+    const path = payloadBtn.dataset.payloadPath;
+    const currentlyLoaded = payloadBtn.dataset.payloadLoaded === "1";
+    runtime.setPayloadLoaded(path, !currentlyLoaded);
+    applyVariantChange();
+    return;
+  }
+
   const item = (e.target as Element).closest<HTMLElement>(".sg-item");
   if (!item?.dataset.path) return;
   selectPrimByPath(item.dataset.path);
@@ -458,6 +517,14 @@ async function boot(): Promise<void> {
 
   const status = await runtime.load();
   renderRuntimeStatus(status);
+
+  if (status.state === "ready" && import.meta.env.DEV) {
+    const devFile = "/testAssets/test_variants.usda";
+    const resp = await fetch(devFile);
+    const buf = await resp.arrayBuffer();
+    const file = new File([buf], devFile.split("/").pop()!, { type: "application/octet-stream" });
+    void loadFiles([file]);
+  }
 }
 
 function hasActualAnimation(start: number, end: number): boolean {
@@ -493,6 +560,7 @@ async function loadFiles(files: File[]): Promise<void> {
     rootFile,
   });
 
+  lastStageSummary = result.summary;
   renderRuntimeStatus(runtime.status);
   renderStageSummary(result.summary);
   viewport.renderStage(result.renderables ?? [], result.summary);
@@ -535,7 +603,7 @@ viewportElement.addEventListener("drop", async (event) => {
 
 // --- Keyboard shortcuts ---
 document.addEventListener("keydown", (e) => {
-  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
   if ((e.key === "f" || e.key === "F") && selectedPrimPath) {
     viewport.framePrim(selectedPrimPath);
   }
