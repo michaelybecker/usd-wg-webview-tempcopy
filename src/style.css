@@ -590,6 +590,17 @@ input {
   white-space: nowrap;
 }
 
+.tutorial-table th {
+  padding: 10px 16px 4px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6b7580;
+  border-bottom: 1px solid rgb(255 255 255 / 8%);
+}
+
 /* ---- Playbar ---- */
 .playbar[hidden] {
   display: none;

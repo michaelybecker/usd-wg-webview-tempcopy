@@ -91,15 +91,22 @@ app.innerHTML = `
         <button class="tutorial-close" id="tutorialClose" aria-label="Close">&times;</button>
       </div>
       <table class="tutorial-table">
+        <thead><tr><th colspan="2">Viewport</th></tr></thead>
         <tbody>
           <tr><td>Left drag</td><td>Orbit camera</td></tr>
           <tr><td>Right drag / Two-finger</td><td>Pan camera</td></tr>
           <tr><td>Scroll / Pinch</td><td>Zoom camera</td></tr>
           <tr><td>F</td><td>Frame selected prim</td></tr>
           <tr><td>Click mesh</td><td>Select prim</td></tr>
-          <tr><td>Click scene graph item</td><td>Select &amp; highlight prim</td></tr>
+        </tbody>
+        <thead><tr><th colspan="2">Scene Graph</th></tr></thead>
+        <tbody>
+          <tr><td>Click item</td><td>Select &amp; highlight prim</td></tr>
           <tr><td>Drop USD / folder</td><td>Load stage</td></tr>
-          <tr><td>Variant select</td><td>Switch USD variant, live re-render</td></tr>
+          <tr><td><span class="sg-badge sg-badge--variant" style="pointer-events:none">V</span> badge</td><td>Prim has USD variant sets — click to cycle, dropdown to pick</td></tr>
+          <tr><td><span class="sg-badge sg-badge--payload sg-badge--payload-loaded" style="pointer-events:none">P</span> badge (amber)</td><td>Payload loaded — click to unload; prim stays in tree but dims</td></tr>
+          <tr><td><span class="sg-badge sg-badge--payload" style="pointer-events:none">P</span> badge (grey)</td><td>Payload unloaded — click to reload geometry and materials</td></tr>
+          <tr><td>View &gt; Load / Unload All Payloads</td><td>Bulk-toggle every payload in the stage at once</td></tr>
         </tbody>
       </table>
     </div>
