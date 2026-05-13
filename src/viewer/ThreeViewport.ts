@@ -179,6 +179,9 @@ export class ThreeViewport {
 
       const mesh = new Mesh(geometry, material);
       mesh.name = renderable.name || renderable.path;
+      mesh.userData.ptsLen  = renderable.points.length;
+      mesh.userData.ptsHead = renderable.points[0];
+      mesh.userData.ptsTail = renderable.points[renderable.points.length - 1];
       this.meshByPath.set(renderable.path, mesh);
       this.pathByMesh.set(mesh, renderable.path);
 
@@ -198,6 +201,130 @@ export class ThreeViewport {
     }
 
     this.frameStage();
+  }
+
+  updateRenderables(renderables: RenderableMesh[]): void {
+    const newPaths = new Set(renderables.map(r => r.path));
+
+    // Remove prims that are no longer in the stage
+    for (const [path, mesh] of [...this.meshByPath.entries()]) {
+      if (!newPaths.has(path)) {
+        this.stageRoot.remove(mesh);
+        mesh.geometry.dispose();
+        (mesh.material as MeshPhysicalMaterial).dispose();
+        this.meshByPath.delete(path);
+        this.pathByMesh.delete(mesh);
+        this.highlightedMeshes.delete(mesh);
+      }
+    }
+
+    for (const renderable of renderables) {
+      const rmat = renderable.material;
+      const [r = 0.72, g = 0.72, b = 0.72] = rmat?.diffuseColor ?? renderable.color ?? [];
+      const existing = this.meshByPath.get(renderable.path);
+
+      if (existing) {
+        // Swap geometry only when the points actually changed.
+        // Compare pre-merge length + first/last values as a O(1) fingerprint.
+        const len = renderable.points.length;
+        if (
+          existing.userData.ptsLen  !== len ||
+          existing.userData.ptsHead !== renderable.points[0] ||
+          existing.userData.ptsTail !== renderable.points[len - 1]
+        ) {
+          const raw = new BufferGeometry();
+          raw.setAttribute("position", new Float32BufferAttribute(renderable.points, 3));
+          if (renderable.uvs?.length) {
+            const uvAttr = new Float32BufferAttribute(renderable.uvs, 2);
+            raw.setAttribute("uv", uvAttr);
+            raw.setAttribute("uv1", uvAttr);
+          }
+          raw.setIndex(renderable.indices);
+          const geometry = mergeVertices(raw);
+          raw.dispose();
+          geometry.computeVertexNormals();
+          existing.geometry.dispose();
+          existing.geometry = geometry;
+          existing.userData.ptsLen  = len;
+          existing.userData.ptsHead = renderable.points[0];
+          existing.userData.ptsTail = renderable.points[len - 1];
+        }
+
+        // Material scalars are cheap to update unconditionally
+        const material = existing.material as MeshPhysicalMaterial;
+        material.color.setRGB(r, g, b);
+        material.metalness = rmat?.metallicTexture ? 1.0 : (rmat?.metallic ?? 0.05);
+        material.roughness = rmat?.roughnessTexture ? 1.0 : (rmat?.roughness ?? 0.55);
+        material.opacity   = rmat?.opacity ?? 1;
+        material.transparent = (rmat?.opacity ?? 1) < 1;
+        material.clearcoat          = rmat?.clearcoat ?? 0;
+        material.clearcoatRoughness = rmat?.clearcoatRoughness ?? 0;
+        material.ior = rmat?.ior ?? 1.5;
+        if (rmat?.emissiveColor) {
+          const [er = 0, eg = 0, eb = 0] = rmat.emissiveColor;
+          material.emissive.setRGB(er, eg, eb);
+        }
+        material.needsUpdate = true;
+
+        // Re-apply highlight if this prim was selected
+        if (this.highlightedMeshes.has(existing)) {
+          this.applyHighlight(existing);
+        }
+      } else {
+        // New prim — full construction, same as renderStage
+        const raw = new BufferGeometry();
+        raw.setAttribute("position", new Float32BufferAttribute(renderable.points, 3));
+        if (renderable.uvs?.length) {
+          const uvAttr = new Float32BufferAttribute(renderable.uvs, 2);
+          raw.setAttribute("uv", uvAttr);
+          raw.setAttribute("uv1", uvAttr);
+        }
+        raw.setIndex(renderable.indices);
+        const geometry = mergeVertices(raw);
+        raw.dispose();
+        geometry.computeVertexNormals();
+
+        const material = new MeshPhysicalMaterial({
+          color: new Color(r, g, b),
+          metalness: rmat?.metallicTexture ? 1.0 : (rmat?.metallic ?? 0.05),
+          roughness: rmat?.roughnessTexture ? 1.0 : (rmat?.roughness ?? 0.55),
+          opacity: rmat?.opacity ?? 1,
+          transparent: (rmat?.opacity ?? 1) < 1,
+          clearcoat: rmat?.clearcoat ?? 0,
+          clearcoatRoughness: rmat?.clearcoatRoughness ?? 0,
+          ior: rmat?.ior ?? 1.5,
+          side: DoubleSide,
+        });
+        if (rmat?.emissiveColor) {
+          const [er = 0, eg = 0, eb = 0] = rmat.emissiveColor;
+          material.emissive = new Color(er, eg, eb);
+        }
+        this.applyTexture(material, "map",                    rmat?.diffuseTexture,            true);
+        this.applyTexture(material, "roughnessMap",           rmat?.roughnessTexture,          false);
+        this.applyTexture(material, "metalnessMap",           rmat?.metallicTexture,           false);
+        this.applyTexture(material, "normalMap",              rmat?.normalTexture,             false);
+        this.applyTexture(material, "aoMap",                  rmat?.occlusionTexture,          false);
+        this.applyTexture(material, "emissiveMap",            rmat?.emissiveTexture,           true);
+        this.applyTexture(material, "clearcoatMap",           rmat?.clearcoatTexture,          false);
+        this.applyTexture(material, "clearcoatRoughnessMap",  rmat?.clearcoatRoughnessTexture, false);
+        this.applyTexture(material, "alphaMap",               rmat?.opacityTexture,            false);
+
+        const mesh = new Mesh(geometry, material);
+        mesh.name = renderable.name || renderable.path;
+        mesh.userData.ptsLen  = renderable.points.length;
+        mesh.userData.ptsHead = renderable.points[0];
+        mesh.userData.ptsTail = renderable.points[renderable.points.length - 1];
+        this.meshByPath.set(renderable.path, mesh);
+        this.pathByMesh.set(mesh, renderable.path);
+        if (renderable.matrix.length === 16) {
+          mesh.matrix.set(...(renderable.matrix as Parameters<typeof mesh.matrix.set>));
+          mesh.matrix.transpose();
+          mesh.matrixAutoUpdate = false;
+        }
+        this.stageRoot.add(mesh);
+      }
+    }
+    // No frameStage() — camera position is intentionally preserved
   }
 
   updateTransforms(transforms: PrimTransform[]): void {
