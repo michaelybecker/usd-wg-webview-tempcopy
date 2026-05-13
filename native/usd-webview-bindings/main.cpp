@@ -1220,6 +1220,26 @@ SetPayloadLoaded(
     return prim && prim.IsLoaded() == loaded;
 }
 
+void
+SetAllPayloadsLoaded(const std::string& stagePath, bool loaded)
+{
+    UsdStageRefPtr stage = _GetOrOpenStage(stagePath);
+    if (!stage) return;
+
+    const auto traversePredicate =
+        UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract;
+
+    for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot(), traversePredicate)) {
+        if (prim.HasPayload()) {
+            if (loaded) {
+                stage->Load(prim.GetPath());
+            } else {
+                stage->Unload(prim.GetPath());
+            }
+        }
+    }
+}
+
 EMSCRIPTEN_BINDINGS(usdWebViewBindings)
 {
     emscripten::function("InitializeRuntime", &InitializeRuntime);
@@ -1233,4 +1253,5 @@ EMSCRIPTEN_BINDINGS(usdWebViewBindings)
     emscripten::function("ReopenStage", &ReopenStage);
     emscripten::function("SetVariantSelection", &SetVariantSelection);
     emscripten::function("SetPayloadLoaded", &SetPayloadLoaded);
+    emscripten::function("SetAllPayloadsLoaded", &SetAllPayloadsLoaded);
 }

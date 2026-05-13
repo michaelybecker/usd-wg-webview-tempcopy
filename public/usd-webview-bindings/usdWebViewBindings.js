@@ -1,6 +1,6 @@
 import createUsdWebViewBindingsModule from "./usdWebViewBindingsModule.js";
 
-const _wasmBuildId = "2025-05-13e"; // bump on every WASM rebuild to bust browser cache
+const _wasmBuildId = "2025-05-13f"; // bump on every WASM rebuild to bust browser cache
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
@@ -139,6 +139,9 @@ window.UsdWebViewBindings = {
       },
       setPayloadLoaded(stagePath, primPath, loaded) {
         return module.SetPayloadLoaded(normalizePath(stagePath), primPath, loaded);
+      },
+      setAllPayloadsLoaded(stagePath, loaded) {
+        return module.SetAllPayloadsLoaded(normalizePath(stagePath), loaded);
       },
       setVariantSelection(stagePath, primPath, variantSetName, selection) {
         const normalized = normalizePath(stagePath);

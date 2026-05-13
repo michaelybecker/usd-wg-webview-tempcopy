@@ -33,6 +33,8 @@ app.innerHTML = `
         <button class="menu-btn">View</button>
         <ul class="menu-dropdown">
           <li><button class="menu-option" id="menuStats">Stats</button></li>
+          <li><button class="menu-option" id="menuLoadAllPayloads">Load All Payloads</button></li>
+          <li><button class="menu-option" id="menuUnloadAllPayloads">Unload All Payloads</button></li>
         </ul>
       </div>
       <div class="menu-item">
@@ -492,6 +494,16 @@ app.querySelector("#menuOpenFolder")?.addEventListener("click", () => {
 
 app.querySelector("#menuStats")?.addEventListener("click", () => {
   statsPanel.hidden = !statsPanel.hidden;
+});
+
+app.querySelector("#menuLoadAllPayloads")?.addEventListener("click", () => {
+  runtime.setAllPayloadsLoaded(true);
+  applyVariantChange();
+});
+
+app.querySelector("#menuUnloadAllPayloads")?.addEventListener("click", () => {
+  runtime.setAllPayloadsLoaded(false);
+  applyVariantChange();
 });
 
 statsClose.addEventListener("click", () => {

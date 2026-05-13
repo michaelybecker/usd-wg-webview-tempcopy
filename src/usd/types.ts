@@ -110,6 +110,7 @@ export type UsdWebViewBindings = {
   getPrimAttributes?: (stagePath: string, primPath: string) => PrimAttribute[];
   setVariantSelection?: (stagePath: string, primPath: string, variantSetName: string, selection: string) => boolean;
   setPayloadLoaded?: (stagePath: string, primPath: string, loaded: boolean) => boolean;
+  setAllPayloadsLoaded?: (stagePath: string, loaded: boolean) => void;
 };
 
 export type UsdWebViewFactory = (options: {

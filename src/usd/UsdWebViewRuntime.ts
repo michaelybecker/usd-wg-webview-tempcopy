@@ -129,6 +129,11 @@ export class UsdWebViewRuntime {
     if (!this.bindings?.setPayloadLoaded || !this.currentStagePath) return false;
     return this.bindings.setPayloadLoaded(this.currentStagePath, primPath, loaded);
   }
+
+  setAllPayloadsLoaded(loaded: boolean): void {
+    if (!this.bindings?.setAllPayloadsLoaded || !this.currentStagePath) return;
+    this.bindings.setAllPayloadsLoaded(this.currentStagePath, loaded);
+  }
 }
 
 function loadRuntimeEntrypoint(source: string): Promise<void> {
