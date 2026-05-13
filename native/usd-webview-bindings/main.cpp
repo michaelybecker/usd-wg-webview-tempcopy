@@ -1050,13 +1050,22 @@ GetSceneGraph(const std::string& path)
         return result;
     }
 
+    // Include prims with unloaded payloads so the scene graph retains
+    // their entries (with a ghostly P button) even after unloading.
+    // UsdPrimDefaultPredicate also requires UsdPrimIsLoaded which would
+    // silently drop them from traversal.
+    const auto traversePredicate =
+        UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract;
+
     size_t index = 0;
-    for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot())) {
+    for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot(), traversePredicate)) {
         if (prim.IsPseudoRoot()) {
             continue;
         }
 
-        const auto children = prim.GetChildren();
+        // hasChildren should reflect what's visible under current load state
+        // (use default predicate children so collapsed payload children are hidden)
+        const auto children = prim.GetFilteredChildren(UsdPrimDefaultPredicate);
         emscripten::val item = emscripten::val::object();
         item.set("path", prim.GetPath().GetString());
         item.set("name", prim.GetName().GetString());

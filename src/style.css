@@ -280,6 +280,12 @@ input {
   background: rgb(251 191 36 / 30%);
 }
 
+.sg-payload-unloaded > .sg-name,
+.sg-payload-unloaded > .sg-type {
+  opacity: 0.38;
+  font-style: italic;
+}
+
 .sg-empty {
   padding: 12px;
   color: #9fa7ad;

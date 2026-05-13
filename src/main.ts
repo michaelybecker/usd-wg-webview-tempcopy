@@ -257,13 +257,14 @@ function renderPrimItem(p: SceneGraphPrim): string {
   const variantBadge = p.hasVariantSets
     ? `<span class="sg-badge sg-badge--variant" title="Has variant sets">V</span>`
     : "";
+  const payloadUnloaded = p.hasPayloads && !p.isPayloadLoaded;
   const payloadBtn = p.hasPayloads
     ? `<button class="sg-badge sg-badge--payload${p.isPayloadLoaded ? " sg-badge--payload-loaded" : ""}" ` +
       `data-payload-path="${escHtml(p.path)}" data-payload-loaded="${p.isPayloadLoaded ? "1" : "0"}" ` +
       `title="${p.isPayloadLoaded ? "Unload payload" : "Load payload"}">P</button>`
     : "";
   return (
-    `<li class="sg-item${p.isActive ? "" : " sg-inactive"}" data-path="${escHtml(p.path)}" style="padding-left:${indent}px">` +
+    `<li class="sg-item${p.isActive ? "" : " sg-inactive"}${payloadUnloaded ? " sg-payload-unloaded" : ""}" data-path="${escHtml(p.path)}" style="padding-left:${indent}px">` +
     toggle +
     `<span class="sg-name">${escHtml(p.name)}</span>` +
     variantBadge +

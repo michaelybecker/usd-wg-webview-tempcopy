@@ -7,11 +7,8 @@
 
 def Xform "World"
 {
-    # RedBox and BlueBox are each a separate payload — toggle them
-    # independently with the P button in the scene graph.
-
     def Xform "RedBox" (
-        payload = @./red_box.usda@</RedBox>
+        payload = @./red_box.usda@
     )
     {
         double3 xformOp:translate = (-160, 0, 0)
@@ -19,7 +16,7 @@ def Xform "World"
     }
 
     def Xform "BlueBox" (
-        payload = @./blue_box.usda@</BlueBox>
+        payload = @./blue_box.usda@
     )
     {
         double3 xformOp:translate = (160, 0, 0)
