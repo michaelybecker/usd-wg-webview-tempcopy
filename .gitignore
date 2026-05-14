@@ -2,6 +2,7 @@ node_modules/
 public/testAssets/
 dist/
 build/
+.emscripten-cache/
 .DS_Store
 *.log
 .env

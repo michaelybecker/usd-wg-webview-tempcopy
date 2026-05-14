@@ -5,10 +5,32 @@
 #include "pxr/base/tf/pathUtils.h"
 #include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/vt/array.h"
+#include "pxr/base/gf/half.h"
 #include "pxr/base/gf/matrix4d.h"
+#include "pxr/base/gf/quath.h"
 #include "pxr/base/gf/vec2f.h"
+#include "pxr/base/gf/vec3d.h"
 #include "pxr/base/gf/vec3f.h"
+#include "pxr/base/gf/vec3h.h"
 #include "pxr/base/tf/token.h"
+#include "pxr/imaging/hd/bprim.h"
+#include "pxr/imaging/hd/camera.h"
+#include "pxr/imaging/hd/changeTracker.h"
+#include "pxr/imaging/hd/coordSys.h"
+#include "pxr/imaging/hd/extComputation.h"
+#include "pxr/imaging/hd/extComputationUtils.h"
+#include "pxr/imaging/hd/filteringSceneIndex.h"
+#include "pxr/imaging/hd/instancer.h"
+#include "pxr/imaging/hd/light.h"
+#include "pxr/imaging/hd/material.h"
+#include "pxr/imaging/hd/mesh.h"
+#include "pxr/imaging/hd/overlayContainerDataSource.h"
+#include "pxr/imaging/hd/renderDelegate.h"
+#include "pxr/imaging/hd/renderIndex.h"
+#include "pxr/imaging/hd/resourceRegistry.h"
+#include "pxr/imaging/hd/retainedDataSource.h"
+#include "pxr/imaging/hd/tokens.h"
+#include "pxr/imaging/hdsi/sceneGlobalsSceneIndex.h"
 #include "pxr/usd/ar/asset.h"
 #include "pxr/usd/ar/definePackageResolver.h"
 #include "pxr/usd/ar/packageUtils.h"
@@ -30,6 +52,7 @@
 #include "pxr/usd/usd/primRange.h"
 #include "pxr/usd/usd/relationship.h"
 #include "pxr/usd/usd/stage.h"
+#include "pxr/usd/usd/timeCode.h"
 #include "pxr/usd/usd/variantSets.h"
 #include "pxr/usd/usdGeom/gprim.h"
 #include "pxr/usd/usdGeom/metrics.h"
@@ -44,11 +67,37 @@
 #include "pxr/usd/usdShade/materialBindingAPI.h"
 #include "pxr/usd/usdShade/shader.h"
 #include "pxr/usd/usdShade/tokens.h"
+#include "pxr/usd/usdSkel/animQuery.h"
+#include "pxr/usd/usdSkel/animMapper.h"
+#include "pxr/usd/usdSkel/animation.h"
+#include "pxr/usd/usdSkel/binding.h"
+#include "pxr/usd/usdSkel/bindingAPI.h"
+#include "pxr/usd/usdSkel/cache.h"
+#include "pxr/usd/usdSkel/root.h"
+#include "pxr/usd/usdSkel/skeleton.h"
+#include "pxr/usd/usdSkel/skeletonQuery.h"
+#include "pxr/usd/usdSkel/skinningQuery.h"
+#include "pxr/usd/usdSkel/utils.h"
+#include "pxr/usdImaging/usdImaging/delegate.h"
+#include "pxr/usdImaging/usdSkelImaging/animationAdapter.h"
+#include "pxr/usdImaging/usdSkelImaging/animationSchema.h"
+#include "pxr/usdImaging/usdSkelImaging/bindingAPIAdapter.h"
+#include "pxr/usdImaging/usdSkelImaging/bindingSchema.h"
+#include "pxr/usdImaging/usdSkelImaging/blendShapeAdapter.h"
+#include "pxr/usdImaging/usdSkelImaging/resolvedSkeletonSchema.h"
+#include "pxr/usdImaging/usdSkelImaging/resolvingSceneIndexPlugin.h"
+#include "pxr/usdImaging/usdSkelImaging/skelRootAdapter.h"
+#include "pxr/usdImaging/usdSkelImaging/skeletonAdapter.h"
+#include "pxr/usdImaging/usdImaging/sceneIndices.h"
+#include "pxr/usdImaging/usdImaging/stageSceneIndex.h"
 
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -64,6 +113,686 @@ struct MeshPayload
     std::vector<int> triangleIndices;
     std::vector<float> uvs;
 };
+
+struct HydraMeshUpdate
+{
+    std::string path;
+    std::string name;
+    std::vector<float> points;
+    std::vector<int> triangleIndices;
+    std::vector<float> uvs;
+    GfMatrix4d matrix;
+    int pointComputationCount = 0;
+    int sceneIndexChildCount = 0;
+    bool sceneIndexHasSkelRoot = false;
+    std::string sceneIndexSkeletonPath;
+    std::string sceneIndexAnimationSourcePath;
+    std::string sceneIndexAnimationPrimType;
+    int sceneIndexAnimationJointCount = 0;
+    int sceneIndexAnimationTranslationCount = 0;
+    double sceneIndexAnimationTranslationSum = 0.0;
+    int sceneIndexAnimationRotationCount = 0;
+    double sceneIndexAnimationRotationSum = 0.0;
+    int sceneIndexAnimationScaleCount = 0;
+    double sceneIndexAnimationScaleSum = 0.0;
+    int sceneIndexSkinningTransformCount = 0;
+    double sceneIndexSkinningTransformSum = 0.0;
+    double sceneIndexSkinningTransformWeightedSum = 0.0;
+    bool usedComputedPoints = false;
+    bool usdSkelFallbackAvailable = false;
+};
+
+struct HydraDiagnostics
+{
+    int createdMeshRprims = 0;
+    int createdExtComputations = 0;
+    int createdMaterials = 0;
+};
+
+struct LegacySkelBindingAuthoringDiagnostics
+{
+    int skeletonPrims = 0;
+    int animationTargets = 0;
+    int meshPrims = 0;
+    int meshSkinningQueries = 0;
+    int meshInferredSkeletons = 0;
+    int relationshipSpecs = 0;
+};
+
+SdfPrimSpecHandle
+_EnsurePrimSpecInLayer(const SdfLayerHandle& layer, const SdfPath& primPath)
+{
+    if (!layer || !primPath.IsAbsolutePath() || !primPath.IsPrimPath()) {
+        return SdfPrimSpecHandle();
+    }
+
+    static std::unordered_map<std::string, SdfPrimSpecHandle> s_primSpecCache;
+    const std::string cachePrefix = layer->GetIdentifier() + "|";
+    auto cachedIt = s_primSpecCache.find(cachePrefix + primPath.GetString());
+    if (cachedIt != s_primSpecCache.end() && cachedIt->second) {
+        return cachedIt->second;
+    }
+
+    SdfChangeBlock changeBlock;
+    SdfPrimSpecHandle primSpec = layer->GetPseudoRoot();
+    for (const SdfPath& prefix : primPath.GetPrefixes()) {
+        if (prefix == SdfPath::AbsoluteRootPath()) {
+            continue;
+        }
+        if (!primSpec) {
+            return SdfPrimSpecHandle();
+        }
+
+        SdfPrimSpecHandle childSpec;
+        const std::string name = prefix.GetName();
+        for (const SdfPrimSpecHandle& child : primSpec->GetNameChildren()) {
+            if (child && child->GetName() == name) {
+                childSpec = child;
+                break;
+            }
+        }
+        if (!childSpec) {
+            childSpec = SdfPrimSpec::New(
+                primSpec,
+                name,
+                SdfSpecifierOver,
+                std::string());
+        }
+        primSpec = childSpec;
+        if (primSpec) {
+            s_primSpecCache[cachePrefix + prefix.GetString()] = primSpec;
+        }
+    }
+
+    s_primSpecCache[cachePrefix + primPath.GetString()] = primSpec;
+    return primSpec;
+}
+
+class WebViewHydraMeshCollector
+{
+public:
+    void Clear()
+    {
+        updates.clear();
+    }
+
+    void Record(HydraMeshUpdate update)
+    {
+        updates[update.path] = std::move(update);
+    }
+
+    std::unordered_map<std::string, HydraMeshUpdate> updates;
+    HydraDiagnostics diagnostics;
+};
+
+bool
+_CopyHydraPoints(const VtValue& value, std::vector<float>* points)
+{
+    points->clear();
+    if (value.IsHolding<VtArray<GfVec3f>>()) {
+        const VtArray<GfVec3f>& array = value.UncheckedGet<VtArray<GfVec3f>>();
+        points->reserve(array.size() * 3);
+        for (const GfVec3f& point : array) {
+            points->push_back(point[0]);
+            points->push_back(point[1]);
+            points->push_back(point[2]);
+        }
+        return !points->empty();
+    }
+    if (value.IsHolding<VtArray<GfVec3d>>()) {
+        const VtArray<GfVec3d>& array = value.UncheckedGet<VtArray<GfVec3d>>();
+        points->reserve(array.size() * 3);
+        for (const GfVec3d& point : array) {
+            points->push_back(static_cast<float>(point[0]));
+            points->push_back(static_cast<float>(point[1]));
+            points->push_back(static_cast<float>(point[2]));
+        }
+        return !points->empty();
+    }
+    return false;
+}
+
+std::vector<int>
+_TriangulateHydraTopology(const HdMeshTopology& topology)
+{
+    std::vector<int> triangles;
+    const VtIntArray& counts = topology.GetFaceVertexCounts();
+    const VtIntArray& indices = topology.GetFaceVertexIndices();
+
+    size_t cursor = 0;
+    for (int count : counts) {
+        if (count < 3 || cursor + static_cast<size_t>(count) > indices.size()) {
+            cursor += std::max(count, 0);
+            continue;
+        }
+
+        for (int i = 1; i + 1 < count; ++i) {
+            triangles.push_back(indices[cursor]);
+            triangles.push_back(indices[cursor + i]);
+            triangles.push_back(indices[cursor + i + 1]);
+        }
+        cursor += count;
+    }
+
+    return triangles;
+}
+
+bool
+_BuildHydraMeshUpdateFromSceneDelegate(
+    HdSceneDelegate* delegate,
+    SdfPath const& id,
+    HydraMeshUpdate* update,
+    float computationSampleOffset = 0.0f);
+
+class WebViewHydraMesh final : public HdMesh
+{
+public:
+    WebViewHydraMesh(SdfPath const& id, WebViewHydraMeshCollector* collector)
+        : HdMesh(id)
+        , _collector(collector)
+    {
+    }
+
+    void Sync(
+        HdSceneDelegate* delegate,
+        HdRenderParam* renderParam,
+        HdDirtyBits* dirtyBits,
+        TfToken const& reprToken) override
+    {
+        const SdfPath& id = GetId();
+        if (!_collector || !dirtyBits || *dirtyBits == HdChangeTracker::Clean) {
+            return;
+        }
+
+        HydraMeshUpdate update;
+        if (_BuildHydraMeshUpdateFromSceneDelegate(delegate, id, &update)) {
+            _collector->Record(std::move(update));
+        }
+
+        *dirtyBits &= ~HdChangeTracker::AllSceneDirtyBits;
+    }
+
+    HdDirtyBits GetInitialDirtyBitsMask() const override
+    {
+        return HdChangeTracker::AllSceneDirtyBits & ~HdChangeTracker::Varying;
+    }
+
+protected:
+    HdDirtyBits _PropagateDirtyBits(HdDirtyBits bits) const override
+    {
+        return bits;
+    }
+
+    void _InitRepr(TfToken const& reprToken, HdDirtyBits* dirtyBits) override
+    {
+        auto it = std::find_if(
+            _reprs.begin(),
+            _reprs.end(),
+            _ReprComparator(reprToken));
+        if (it == _reprs.end()) {
+            _reprs.emplace_back(reprToken, HdReprSharedPtr());
+        }
+    }
+
+private:
+    WebViewHydraMeshCollector* _collector;
+};
+
+template <typename Base>
+class WebViewHydraSprim final : public Base
+{
+public:
+    explicit WebViewHydraSprim(SdfPath const& id)
+        : Base(id)
+    {
+    }
+
+    void Sync(
+        HdSceneDelegate* sceneDelegate,
+        HdRenderParam* renderParam,
+        HdDirtyBits* dirtyBits) override
+    {
+        *dirtyBits = Base::Clean;
+    }
+
+    HdDirtyBits GetInitialDirtyBitsMask() const override
+    {
+        return Base::AllDirty;
+    }
+};
+
+class WebViewHydraRenderDelegate final : public HdRenderDelegate
+{
+public:
+    explicit WebViewHydraRenderDelegate(WebViewHydraMeshCollector* collector)
+        : _collector(collector)
+    {
+    }
+
+    const TfTokenVector& GetSupportedRprimTypes() const override
+    {
+        static const TfTokenVector tokens = { HdPrimTypeTokens->mesh };
+        return tokens;
+    }
+
+    const TfTokenVector& GetSupportedSprimTypes() const override
+    {
+        static const TfTokenVector tokens = {
+            HdPrimTypeTokens->camera,
+            HdPrimTypeTokens->coordSys,
+            HdPrimTypeTokens->domeLight,
+            HdPrimTypeTokens->extComputation,
+            HdPrimTypeTokens->material
+        };
+        return tokens;
+    }
+
+    const TfTokenVector& GetSupportedBprimTypes() const override
+    {
+        static const TfTokenVector tokens;
+        return tokens;
+    }
+
+    HdRenderParam* GetRenderParam() const override
+    {
+        return nullptr;
+    }
+
+    HdResourceRegistrySharedPtr GetResourceRegistry() const override
+    {
+        static HdResourceRegistrySharedPtr registry(new HdResourceRegistry);
+        return registry;
+    }
+
+    HdRenderPassSharedPtr CreateRenderPass(
+        HdRenderIndex* index,
+        HdRprimCollection const& collection) override
+    {
+        return HdRenderPassSharedPtr();
+    }
+
+    HdInstancer* CreateInstancer(
+        HdSceneDelegate* delegate,
+        SdfPath const& id) override
+    {
+        return new HdInstancer(delegate, id);
+    }
+
+    void DestroyInstancer(HdInstancer* instancer) override
+    {
+        delete instancer;
+    }
+
+    HdRprim* CreateRprim(TfToken const& typeId, SdfPath const& rprimId) override
+    {
+        if (typeId == HdPrimTypeTokens->mesh) {
+            if (_collector) {
+                ++_collector->diagnostics.createdMeshRprims;
+            }
+            return new WebViewHydraMesh(rprimId, _collector);
+        }
+        return nullptr;
+    }
+
+    void DestroyRprim(HdRprim* rprim) override
+    {
+        delete rprim;
+    }
+
+    HdSprim* CreateSprim(TfToken const& typeId, SdfPath const& sprimId) override
+    {
+        if (typeId == HdPrimTypeTokens->material) {
+            if (_collector) {
+                ++_collector->diagnostics.createdMaterials;
+            }
+            return new WebViewHydraSprim<HdMaterial>(sprimId);
+        }
+        if (typeId == HdPrimTypeTokens->camera) {
+            return new WebViewHydraSprim<HdCamera>(sprimId);
+        }
+        if (typeId == HdPrimTypeTokens->coordSys) {
+            return new WebViewHydraSprim<HdCoordSys>(sprimId);
+        }
+        if (typeId == HdPrimTypeTokens->domeLight) {
+            return new WebViewHydraSprim<HdLight>(sprimId);
+        }
+        if (typeId == HdPrimTypeTokens->extComputation) {
+            if (_collector) {
+                ++_collector->diagnostics.createdExtComputations;
+            }
+            return new HdExtComputation(sprimId);
+        }
+        return nullptr;
+    }
+
+    HdSprim* CreateFallbackSprim(TfToken const& typeId) override
+    {
+        return CreateSprim(typeId, SdfPath::EmptyPath());
+    }
+
+    void DestroySprim(HdSprim* sprim) override
+    {
+        delete sprim;
+    }
+
+    HdBprim* CreateBprim(TfToken const& typeId, SdfPath const& bprimId) override
+    {
+        return nullptr;
+    }
+
+    HdBprim* CreateFallbackBprim(TfToken const& typeId) override
+    {
+        return nullptr;
+    }
+
+    void DestroyBprim(HdBprim* bprim) override
+    {
+        delete bprim;
+    }
+
+    void CommitResources(HdChangeTracker* tracker) override
+    {
+    }
+
+private:
+    WebViewHydraMeshCollector* _collector;
+};
+
+bool
+_BuildHydraMeshUpdateFromSceneDelegate(
+    HdSceneDelegate* delegate,
+    SdfPath const& id,
+    HydraMeshUpdate* update,
+    float computationSampleOffset)
+{
+    if (!delegate || !update) {
+        return false;
+    }
+
+    update->path = id.GetString();
+    update->name = id.GetName();
+    update->matrix = delegate->GetTransform(id);
+    update->triangleIndices =
+        _TriangulateHydraTopology(delegate->GetMeshTopology(id));
+
+    VtValue pointsValue = delegate->Get(id, HdTokens->points);
+    HdExtComputationPrimvarDescriptorVector pointsComputations;
+    for (size_t i = 0; i < HdInterpolationCount; ++i) {
+        HdInterpolation interpolation = static_cast<HdInterpolation>(i);
+        HdExtComputationPrimvarDescriptorVector descriptors =
+            delegate->GetExtComputationPrimvarDescriptors(id, interpolation);
+        for (const HdExtComputationPrimvarDescriptor& descriptor : descriptors) {
+            if (descriptor.name == HdTokens->points) {
+                pointsComputations.push_back(descriptor);
+            }
+        }
+    }
+
+    if (!pointsComputations.empty()) {
+        update->pointComputationCount =
+            static_cast<int>(pointsComputations.size());
+        if (computationSampleOffset != 0.0f) {
+            HdExtComputationUtils::SampledValueStore<4> computedValues;
+            HdExtComputationUtils::SampleComputedPrimvarValues<4>(
+                pointsComputations,
+                delegate,
+                computationSampleOffset,
+                computationSampleOffset,
+                4,
+                &computedValues);
+            auto it = computedValues.find(HdTokens->points);
+            if (it != computedValues.end() && it->second.count > 0) {
+                pointsValue = it->second.values[it->second.count - 1];
+                update->usedComputedPoints = true;
+            }
+        } else {
+            HdExtComputationUtils::ValueStore computedValues =
+                HdExtComputationUtils::GetComputedPrimvarValues(
+                    pointsComputations,
+                    delegate);
+            auto it = computedValues.find(HdTokens->points);
+            if (it != computedValues.end() && !it->second.IsEmpty()) {
+                pointsValue = it->second;
+                update->usedComputedPoints = true;
+            }
+        }
+    }
+
+    return !update->triangleIndices.empty() &&
+        _CopyHydraPoints(pointsValue, &update->points);
+}
+
+bool
+_BuildHydraMeshUpdate(
+    HdRenderIndex* renderIndex,
+    SdfPath const& id,
+    HydraMeshUpdate* update,
+    float computationSampleOffset = 0.0f)
+{
+    if (!renderIndex || !renderIndex->HasRprim(id)) {
+        return false;
+    }
+    HdSceneDelegate* delegate = renderIndex->GetSceneDelegateForRprim(id);
+    return _BuildHydraMeshUpdateFromSceneDelegate(
+        delegate,
+        id,
+        update,
+        computationSampleOffset);
+}
+
+UsdSkelSkeleton
+_FindSkeletonForSkinnedPrim(const std::string& stagePath, const UsdPrim& prim);
+
+UsdPrim
+_InferAnimationForSkeleton(const UsdPrim& skeleton);
+
+HdContainerDataSourceHandle
+_BuildSkelBindingRepairDataSource(
+    const std::string& stagePath,
+    const UsdPrim& prim)
+{
+    if (!prim) {
+        return nullptr;
+    }
+
+    UsdSkelBindingAPI binding(prim);
+    HdPathDataSourceHandle animationSourceDs;
+    HdPathDataSourceHandle skeletonDs;
+    HdBoolDataSourceHandle hasSkelRootDs;
+
+    SdfPath animationSourcePath;
+    if (UsdRelationship animationSourceRel =
+            prim.GetRelationship(UsdSkelTokens->skelAnimationSource)) {
+        SdfPathVector targets;
+        if (animationSourceRel.GetTargets(&targets) && !targets.empty()) {
+            animationSourcePath = targets.front();
+        }
+    }
+    if (animationSourcePath.IsEmpty()) {
+        if (UsdPrim animationSource = binding.GetInheritedAnimationSource()) {
+            animationSourcePath = animationSource.GetPath();
+        }
+    }
+    if (animationSourcePath.IsEmpty()) {
+        if (UsdPrim animationSource =
+                _InferAnimationForSkeleton(prim)) {
+            animationSourcePath = animationSource.GetPath();
+        }
+    }
+    if (!animationSourcePath.IsEmpty()) {
+        animationSourceDs =
+            HdRetainedTypedSampledDataSource<SdfPath>::New(
+                animationSourcePath);
+    }
+
+    SdfPath skeletonPath;
+    if (UsdRelationship skeletonRel =
+            prim.GetRelationship(UsdSkelTokens->skelSkeleton)) {
+        SdfPathVector targets;
+        if (skeletonRel.GetTargets(&targets) && !targets.empty()) {
+            skeletonPath = targets.front();
+        }
+    }
+    if (skeletonPath.IsEmpty()) {
+        if (UsdSkelSkeleton skeleton = binding.GetInheritedSkeleton()) {
+            skeletonPath = skeleton.GetPrim().GetPath();
+        }
+    }
+    if (skeletonPath.IsEmpty()) {
+        if (UsdSkelSkeleton skeleton =
+                _FindSkeletonForSkinnedPrim(stagePath, prim)) {
+            skeletonPath = skeleton.GetPrim().GetPath();
+        }
+    }
+    if (!skeletonPath.IsEmpty()) {
+        skeletonDs =
+            HdRetainedTypedSampledDataSource<SdfPath>::New(
+                skeletonPath);
+    }
+
+    if (UsdSkelRoot::Find(prim)) {
+        hasSkelRootDs =
+            HdRetainedTypedSampledDataSource<bool>::New(true);
+    }
+
+    if (!animationSourceDs && !skeletonDs && !hasSkelRootDs) {
+        return nullptr;
+    }
+
+    return HdRetainedContainerDataSource::New(
+        UsdSkelImagingBindingSchema::GetSchemaToken(),
+        UsdSkelImagingBindingSchema::BuildRetained(
+            animationSourceDs,
+            skeletonDs,
+            /* joints = */ nullptr,
+            /* blendShapes = */ nullptr,
+            /* blendShapeTargets = */ nullptr,
+            hasSkelRootDs));
+}
+
+class WebViewSkelBindingRepairSceneIndex final
+    : public HdSingleInputFilteringSceneIndexBase
+{
+public:
+    static HdSceneIndexBaseRefPtr New(
+        HdSceneIndexBaseRefPtr const& inputSceneIndex,
+        UsdStageRefPtr stage,
+        std::string stagePath)
+    {
+        return TfCreateRefPtr(new WebViewSkelBindingRepairSceneIndex(
+            inputSceneIndex,
+            std::move(stage),
+            std::move(stagePath)));
+    }
+
+    HdSceneIndexPrim GetPrim(const SdfPath& primPath) const override
+    {
+        HdSceneIndexPrim prim = _GetInputSceneIndex()->GetPrim(primPath);
+        if (!prim.dataSource || !_stage || primPath.IsAbsoluteRootPath()) {
+            return prim;
+        }
+
+        UsdPrim usdPrim = _stage->GetPrimAtPath(primPath.GetPrimPath());
+        if (!usdPrim) {
+            return prim;
+        }
+
+        HdContainerDataSourceHandle repairedSkelBinding =
+            _BuildSkelBindingRepairDataSource(_stagePath, usdPrim);
+        if (!repairedSkelBinding) {
+            return prim;
+        }
+
+        prim.dataSource = HdOverlayContainerDataSource::New(
+            repairedSkelBinding,
+            prim.dataSource);
+        return prim;
+    }
+
+    SdfPathVector GetChildPrimPaths(const SdfPath& primPath) const override
+    {
+        return _GetInputSceneIndex()->GetChildPrimPaths(primPath);
+    }
+
+protected:
+    void _PrimsAdded(
+        const HdSceneIndexBase&,
+        const HdSceneIndexObserver::AddedPrimEntries& entries) override
+    {
+        _SendPrimsAdded(entries);
+    }
+
+    void _PrimsRemoved(
+        const HdSceneIndexBase&,
+        const HdSceneIndexObserver::RemovedPrimEntries& entries) override
+    {
+        _SendPrimsRemoved(entries);
+    }
+
+    void _PrimsDirtied(
+        const HdSceneIndexBase&,
+        const HdSceneIndexObserver::DirtiedPrimEntries& entries) override
+    {
+        _SendPrimsDirtied(entries);
+    }
+
+private:
+    WebViewSkelBindingRepairSceneIndex(
+        HdSceneIndexBaseRefPtr const& inputSceneIndex,
+        UsdStageRefPtr stage,
+        std::string stagePath)
+        : HdSingleInputFilteringSceneIndexBase(inputSceneIndex)
+        , _stage(std::move(stage))
+        , _stagePath(std::move(stagePath))
+    {
+    }
+
+    UsdStageRefPtr _stage;
+    std::string _stagePath;
+};
+
+struct HydraAnimationDriver
+{
+    HydraAnimationDriver(std::string stagePath, UsdStageRefPtr stage)
+        : stage(std::move(stage))
+        , stagePath(std::move(stagePath))
+        , renderDelegate(&collector)
+    {
+        renderIndex.reset(HdRenderIndex::New(
+            &renderDelegate,
+            HdDriverVector()));
+        imagingDelegate = std::make_unique<UsdImagingDelegate>(
+            renderIndex.get(),
+            SdfPath::AbsoluteRootPath());
+        if (this->stage) {
+            // Give legacy UsdSkelImagingSkelRootAdapter first claim on
+            // skinned meshes before the general population traversal reaches
+            // the same mesh prims via their regular UsdGeom adapters.
+            bool populatedRoot = false;
+            for (const UsdPrim& prim : UsdPrimRange(this->stage->GetPseudoRoot())) {
+                if (prim.IsA<UsdSkelRoot>()) {
+                    imagingDelegate->Populate(prim);
+                    populatedRoot = true;
+                }
+            }
+            if (!populatedRoot) {
+                imagingDelegate->Populate(this->stage->GetPseudoRoot());
+            }
+            imagingDelegate->ApplyPendingUpdates();
+            imagingDelegate->SyncAll(true);
+        }
+    }
+
+    UsdStageRefPtr stage;
+    std::string stagePath;
+    WebViewHydraMeshCollector collector;
+    WebViewHydraRenderDelegate renderDelegate;
+    std::unique_ptr<HdRenderIndex> renderIndex;
+    std::unique_ptr<UsdImagingDelegate> imagingDelegate;
+};
+
+std::unordered_map<std::string, std::unique_ptr<HydraAnimationDriver>>
+    g_hydraAnimationDrivers;
 
 int
 _CountPrims(const UsdStageRefPtr& stage)
@@ -93,8 +822,35 @@ _ErrorResult(const std::string& path, const std::string& message)
 }
 
 void
+_ForceUsdSkelImagingStaticRegistration()
+{
+    // In a static WASM link, plugInfo can advertise adapter types whose object
+    // files were otherwise not pulled from libusd_usdSkelImaging.a. Touch the
+    // concrete adapter classes so their TF_REGISTRY_FUNCTION blocks are linked
+    // and the plugin system can manufacture them at runtime.
+    static const bool registered = []() {
+        UsdSkelImagingAnimationAdapter animationAdapter;
+        UsdSkelImagingBindingAPIAdapter bindingAdapter;
+        UsdSkelImagingBlendShapeAdapter blendShapeAdapter;
+        UsdSkelImagingResolvingSceneIndexPlugin resolvingSceneIndexPlugin;
+        UsdSkelImagingSkeletonAdapter skeletonAdapter;
+        UsdSkelImagingSkelRootAdapter skelRootAdapter;
+
+        (void)animationAdapter;
+        (void)bindingAdapter;
+        (void)blendShapeAdapter;
+        (void)resolvingSceneIndexPlugin;
+        (void)skeletonAdapter;
+        (void)skelRootAdapter;
+        return true;
+    }();
+    (void)registered;
+}
+
+void
 InitializeRuntime()
 {
+    _ForceUsdSkelImagingStaticRegistration();
     PlugRegistry::GetInstance().RegisterPlugins("/usd/plugInfo.json");
 
     const TfType resolverType = TfType::FindByName("Sdf_UsdzResolver");
@@ -139,6 +895,16 @@ _MatrixArray(const GfMatrix4d& matrix)
         }
     }
     return array;
+}
+
+emscripten::val
+_Float32Array(const std::vector<float>& values)
+{
+    if (values.empty()) {
+        return emscripten::val::global("Float32Array").new_(0);
+    }
+    return emscripten::val::global("Float32Array")
+        .new_(emscripten::typed_memory_view(values.size(), values.data()));
 }
 
 bool
@@ -265,6 +1031,335 @@ _FindBoundMaterialPrimByAuthoredRelationships(const UsdPrim& prim)
     // All relationship APIs failed — scan stage for Material prims.
     // Handles USD 26+ schema changes that make pre-schema material:binding invisible.
     return _FindMaterialPrimByStageTraversal(prim);
+}
+
+bool
+_RelationshipHasResolvedTargets(const UsdRelationship& relationship)
+{
+    if (!relationship) {
+        return false;
+    }
+
+    SdfPathVector targets;
+    if (relationship.GetForwardedTargets(&targets) && !targets.empty()) {
+        return true;
+    }
+    targets.clear();
+    return relationship.GetTargets(&targets) && !targets.empty();
+}
+
+UsdPrim
+_FindFirstDescendantOfType(const UsdPrim& root, const TfToken& typeName)
+{
+    if (!root) {
+        return UsdPrim();
+    }
+
+    for (const UsdPrim& prim : UsdPrimRange(root)) {
+        if (prim == root) {
+            continue;
+        }
+        if (prim.GetTypeName() == typeName) {
+            return prim;
+        }
+    }
+    return UsdPrim();
+}
+
+UsdPrim
+_InferSkeletonForSkelBoundPrim(const UsdPrim& prim)
+{
+    if (!prim) {
+        return UsdPrim();
+    }
+
+    static const TfToken kSkeletonType("Skeleton");
+    for (UsdPrim ancestor = prim.GetParent();
+         ancestor && !ancestor.IsPseudoRoot();
+         ancestor = ancestor.GetParent()) {
+        UsdPrim skeleton = _FindFirstDescendantOfType(ancestor, kSkeletonType);
+        if (skeleton) {
+            return skeleton;
+        }
+    }
+    return UsdPrim();
+}
+
+UsdPrim
+_InferAnimationForSkeleton(const UsdPrim& skeleton)
+{
+    static const TfToken kSkelAnimationType("SkelAnimation");
+    return _FindFirstDescendantOfType(skeleton, kSkelAnimationType);
+}
+
+bool
+_ComputeInferredSkinningTransforms(
+    const UsdSkelCache* skelCache,
+    const UsdSkelSkeleton& skeleton,
+    UsdTimeCode timeCode,
+    VtArray<GfMatrix4d>* skinningTransforms,
+    emscripten::val* debugInfo = nullptr)
+{
+    if (!skelCache || !skeleton || !skinningTransforms) {
+        return false;
+    }
+
+    UsdPrim animationPrim = _InferAnimationForSkeleton(skeleton.GetPrim());
+    if (debugInfo) {
+        debugInfo->set("inferredAnimationPrimPath", animationPrim
+            ? animationPrim.GetPath().GetString()
+            : std::string());
+    }
+    if (!animationPrim) {
+        return false;
+    }
+
+    UsdSkelSkeletonQuery skelQuery = skelCache->GetSkelQuery(skeleton);
+    UsdSkelAnimQuery animQuery =
+        skelCache->GetAnimQuery(UsdSkelAnimation(animationPrim));
+    if (!skelQuery || !animQuery) {
+        return false;
+    }
+
+    VtArray<GfMatrix4d> animLocalTransforms;
+    VtTokenArray animJointOrder;
+    bool animQueryComputed = false;
+    if (animQuery &&
+        animQuery.ComputeJointLocalTransforms(&animLocalTransforms, timeCode) &&
+        !animLocalTransforms.empty()) {
+        animJointOrder = animQuery.GetJointOrder();
+        animQueryComputed = true;
+    } else {
+        UsdSkelAnimation animation(animationPrim);
+        VtArray<GfVec3f> translations;
+        VtArray<GfQuatf> rotations;
+        VtArray<GfVec3h> scales;
+        animation.GetJointsAttr().Get(&animJointOrder);
+        animation.GetTranslationsAttr().Get(&translations, timeCode);
+        animation.GetRotationsAttr().Get(&rotations, timeCode);
+        animation.GetScalesAttr().Get(&scales, timeCode);
+
+        size_t transformCount = animJointOrder.size();
+        transformCount = std::max(transformCount, translations.size());
+        transformCount = std::max(transformCount, rotations.size());
+        transformCount = std::max(transformCount, scales.size());
+        if (debugInfo) {
+            debugInfo->set("rawAnimJointCount", static_cast<int>(animJointOrder.size()));
+            debugInfo->set("rawTranslationCount", static_cast<int>(translations.size()));
+            debugInfo->set("rawRotationCount", static_cast<int>(rotations.size()));
+            debugInfo->set("rawScaleCount", static_cast<int>(scales.size()));
+            debugInfo->set("rawTransformCount", static_cast<int>(transformCount));
+        }
+        if (transformCount == 0) {
+            return false;
+        }
+
+        if (translations.size() != transformCount) {
+            translations.assign(transformCount, GfVec3f(0.0f));
+        }
+        if (rotations.size() != transformCount) {
+            rotations.assign(transformCount, GfQuatf(1.0f));
+        }
+        if (scales.size() != transformCount) {
+            scales.assign(transformCount, GfVec3h(1.0f));
+        }
+        if (animJointOrder.empty()) {
+            animJointOrder = skelQuery.GetJointOrder();
+        }
+
+        animLocalTransforms.resize(translations.size());
+        if (!UsdSkelMakeTransforms(
+                translations,
+                rotations,
+                scales,
+                &animLocalTransforms)) {
+            return false;
+        }
+    }
+    if (debugInfo) {
+        debugInfo->set("usedAnimQueryTransforms", animQueryComputed);
+        debugInfo->set("animJointOrderCount", static_cast<int>(animJointOrder.size()));
+        debugInfo->set("animLocalTransformCount", static_cast<int>(animLocalTransforms.size()));
+    }
+
+    if (animJointOrder.empty() || animLocalTransforms.empty()) {
+        return false;
+    }
+
+    VtArray<GfMatrix4d> localTransforms;
+    if (!skelQuery.ComputeJointLocalTransforms(&localTransforms, timeCode) ||
+        localTransforms.empty()) {
+        return false;
+    }
+
+    VtTokenArray skelJointOrder = skelQuery.GetJointOrder();
+    if (skelJointOrder.empty() ||
+        animJointOrder.empty() ||
+        localTransforms.size() != skelJointOrder.size()) {
+        if (debugInfo) {
+            debugInfo->set("skelJointOrderCount", static_cast<int>(skelJointOrder.size()));
+            debugInfo->set("seedLocalTransformCount", static_cast<int>(localTransforms.size()));
+        }
+        return false;
+    }
+
+    UsdSkelAnimMapper animToSkelMapper(animJointOrder, skelJointOrder);
+    if (debugInfo) {
+        debugInfo->set("inferredAnimMapperIsNull", animToSkelMapper.IsNull());
+        debugInfo->set("inferredAnimMapperIsSparse", animToSkelMapper.IsSparse());
+    }
+    if (animToSkelMapper.IsNull()) {
+        return false;
+    }
+    if (!animToSkelMapper.RemapTransforms(animLocalTransforms, &localTransforms)) {
+        if (debugInfo) {
+            debugInfo->set("inferredAnimMapperRemapFailed", true);
+        }
+        return false;
+    }
+
+    VtArray<GfMatrix4d> jointSkelTransforms;
+    jointSkelTransforms.resize(localTransforms.size());
+    if (!UsdSkelConcatJointTransforms(
+            skelQuery.GetTopology(),
+            localTransforms,
+            jointSkelTransforms)) {
+        if (debugInfo) {
+            debugInfo->set("concatFailed", true);
+            debugInfo->set("localTransformCount", static_cast<int>(localTransforms.size()));
+        }
+        return false;
+    }
+
+    VtArray<GfMatrix4d> bindTransforms;
+    if (!skelQuery.GetJointWorldBindTransforms(&bindTransforms) ||
+        bindTransforms.size() != jointSkelTransforms.size()) {
+        if (debugInfo) {
+            debugInfo->set("bindTransformCount", static_cast<int>(bindTransforms.size()));
+            debugInfo->set("jointSkelTransformCount", static_cast<int>(jointSkelTransforms.size()));
+        }
+        return false;
+    }
+
+    skinningTransforms->resize(jointSkelTransforms.size());
+    for (size_t index = 0; index < jointSkelTransforms.size(); ++index) {
+        (*skinningTransforms)[index] =
+            bindTransforms[index].GetInverse() * jointSkelTransforms[index];
+    }
+    return true;
+}
+
+int
+_AuthorLegacySkelBindingTargets(
+    const UsdStageRefPtr& stage,
+    LegacySkelBindingAuthoringDiagnostics* diagnostics)
+{
+    if (!stage) {
+        return 0;
+    }
+
+    static const TfToken kSkeletonType("Skeleton");
+
+    SdfLayerHandle sessionLayer = stage->GetSessionLayer();
+    if (!sessionLayer) {
+        return 0;
+    }
+
+    UsdSkelCache skinningQueryCache;
+    for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot())) {
+        if (prim.IsA<UsdSkelRoot>()) {
+            skinningQueryCache.Populate(
+                UsdSkelRoot(prim),
+                UsdTraverseInstanceProxies());
+        }
+    }
+
+    int authoredCount = 0;
+    UsdEditContext editContext(
+        stage,
+        stage->GetEditTargetForLocalLayer(sessionLayer));
+
+    auto getOrCreateRelSpec = [&](const SdfPath& primPath, const TfToken& relName) {
+        SdfPrimSpecHandle primSpec =
+            _EnsurePrimSpecInLayer(sessionLayer, primPath);
+        if (!primSpec) {
+            return SdfRelationshipSpecHandle();
+        }
+        SdfRelationshipSpecHandle relSpec =
+            primSpec->GetRelationships()[relName.GetString()];
+        if (!relSpec) {
+            relSpec = SdfRelationshipSpec::New(
+                primSpec,
+                relName.GetString(),
+                /* custom = */ false,
+                SdfVariabilityVarying);
+        }
+        return relSpec;
+    };
+
+    for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot())) {
+        if (prim.GetTypeName() == kSkeletonType) {
+            if (diagnostics) {
+                ++diagnostics->skeletonPrims;
+            }
+            UsdPrim animation = _InferAnimationForSkeleton(prim);
+            if (!animation) {
+                continue;
+            }
+            if (diagnostics) {
+                ++diagnostics->animationTargets;
+            }
+
+            SdfRelationshipSpecHandle relSpec = getOrCreateRelSpec(
+                prim.GetPath(),
+                UsdSkelTokens->skelAnimationSource);
+            if (relSpec) {
+                if (diagnostics) {
+                    ++diagnostics->relationshipSpecs;
+                }
+                relSpec->GetTargetPathList().GetExplicitItems() = {
+                    animation.GetPath()
+                };
+                ++authoredCount;
+            }
+            continue;
+        }
+
+        if (!prim.IsA<UsdGeomMesh>() ||
+            !skinningQueryCache.GetSkinningQuery(prim)) {
+            if (prim.IsA<UsdGeomMesh>() && diagnostics) {
+                ++diagnostics->meshPrims;
+            }
+            continue;
+        }
+        if (diagnostics) {
+            ++diagnostics->meshPrims;
+            ++diagnostics->meshSkinningQueries;
+        }
+
+        UsdPrim skeleton = _InferSkeletonForSkelBoundPrim(prim);
+        if (!skeleton) {
+            continue;
+        }
+        if (diagnostics) {
+            ++diagnostics->meshInferredSkeletons;
+        }
+
+        SdfRelationshipSpecHandle relSpec = getOrCreateRelSpec(
+            prim.GetPath(),
+            UsdSkelTokens->skelSkeleton);
+        if (relSpec) {
+            if (diagnostics) {
+                ++diagnostics->relationshipSpecs;
+            }
+            relSpec->GetTargetPathList().GetExplicitItems() = {
+                skeleton.GetPath()
+            };
+            ++authoredCount;
+        }
+    }
+
+    return authoredCount;
 }
 
 emscripten::val
@@ -762,19 +1857,60 @@ _GetUvForFaceVertex(
 }
 
 bool
-_ExtractMeshPayload(const UsdGeomMesh& mesh, MeshPayload* payload)
+_ExtractMeshPayload(
+    const UsdGeomMesh& mesh,
+    MeshPayload* payload,
+    UsdTimeCode timeCode,
+    const UsdSkelCache* skelCache,
+    const UsdSkelSkeleton& skel,
+    UsdGeomXformCache* xformCache)
 {
     VtArray<GfVec3f> usdPoints;
     VtArray<int> faceVertexCounts;
     VtArray<int> faceVertexIndices;
 
-    if (!mesh.GetPointsAttr().Get(&usdPoints) ||
+    if (!mesh.GetPointsAttr().Get(&usdPoints, timeCode) ||
         !mesh.GetFaceVertexCountsAttr().Get(&faceVertexCounts) ||
         !mesh.GetFaceVertexIndicesAttr().Get(&faceVertexIndices) ||
         usdPoints.empty() ||
         faceVertexCounts.empty() ||
         faceVertexIndices.empty()) {
         return false;
+    }
+
+    if (skelCache && skel && xformCache) {
+        const UsdPrim meshPrim = mesh.GetPrim();
+        if (UsdSkelSkinningQuery skinningQuery = skelCache->GetSkinningQuery(meshPrim)) {
+            if (UsdSkelSkeletonQuery skelQuery = skelCache->GetSkelQuery(skel)) {
+                VtArray<GfMatrix4d> skinningTransforms;
+                skelQuery.ComputeSkinningTransforms(&skinningTransforms, timeCode);
+                if (!skelQuery.GetAnimQuery()) {
+                    _ComputeInferredSkinningTransforms(
+                        skelCache,
+                        skel,
+                        timeCode,
+                        &skinningTransforms);
+                }
+                if (!skinningTransforms.empty()) {
+                    VtArray<GfVec3f> skinnedPoints = usdPoints;
+                    if (skinningQuery.ComputeSkinnedPoints(
+                            skinningTransforms,
+                            &skinnedPoints,
+                            timeCode)) {
+                            const GfMatrix4d skelLocalToWorld =
+                                xformCache->GetLocalToWorldTransform(skel.GetPrim());
+                            const GfMatrix4d gprimLocalToWorld =
+                                xformCache->GetLocalToWorldTransform(meshPrim);
+                            const GfMatrix4d skelToGprim =
+                                skelLocalToWorld * gprimLocalToWorld.GetInverse();
+                            for (GfVec3f& point : skinnedPoints) {
+                                point = GfVec3f(skelToGprim.Transform(point));
+                            }
+                            usdPoints = skinnedPoints;
+                    }
+                }
+            }
+        }
     }
 
     VtArray<GfVec2f> uvValues;
@@ -850,6 +1986,13 @@ _ExtractMeshPayload(const UsdGeomMesh& mesh, MeshPayload* payload)
 // Cache to avoid re-opening the stage on every ExtractTransformsAtTime call.
 // Key is the normalized stage path passed by the JS caller.
 static std::unordered_map<std::string, UsdStageRefPtr> g_stageCache;
+static std::unordered_map<std::string, std::unique_ptr<UsdSkelCache>> g_skelCache;
+static std::unordered_map<std::string, bool> g_stageHasSkelRoot;
+static std::unordered_map<std::string, std::unordered_map<std::string, UsdSkelSkeleton>>
+    g_skinningSkeletonByStageAndPrim;
+static std::unordered_map<std::string, int> g_authoredLegacySkelBindingTargets;
+static std::unordered_map<std::string, LegacySkelBindingAuthoringDiagnostics>
+    g_legacySkelBindingAuthoringDiagnostics;
 
 UsdStageRefPtr
 _GetOrOpenStage(const std::string& path)
@@ -863,6 +2006,90 @@ _GetOrOpenStage(const std::string& path)
         g_stageCache[path] = stage;
     }
     return stage;
+}
+
+void
+_InvalidateDerivedStageCaches(const std::string& path)
+{
+    g_skelCache.erase(path);
+    g_stageHasSkelRoot.erase(path);
+    g_skinningSkeletonByStageAndPrim.erase(path);
+    g_hydraAnimationDrivers.erase(path);
+    g_authoredLegacySkelBindingTargets.erase(path);
+    g_legacySkelBindingAuthoringDiagnostics.erase(path);
+}
+
+UsdSkelCache*
+_GetOrPopulateSkelCache(const std::string& path, const UsdStageRefPtr& stage)
+{
+    if (g_authoredLegacySkelBindingTargets.find(path) ==
+        g_authoredLegacySkelBindingTargets.end()) {
+        LegacySkelBindingAuthoringDiagnostics diagnostics;
+        g_authoredLegacySkelBindingTargets[path] =
+            _AuthorLegacySkelBindingTargets(stage, &diagnostics);
+        g_legacySkelBindingAuthoringDiagnostics[path] = diagnostics;
+    }
+
+    auto hasIt = g_stageHasSkelRoot.find(path);
+    if (hasIt != g_stageHasSkelRoot.end() && !hasIt->second) {
+        return nullptr;
+    }
+
+    auto cacheIt = g_skelCache.find(path);
+    if (cacheIt != g_skelCache.end()) {
+        return cacheIt->second.get();
+    }
+
+    auto cache = std::make_unique<UsdSkelCache>();
+    auto& skeletonByPrim = g_skinningSkeletonByStageAndPrim[path];
+    skeletonByPrim.clear();
+    bool hasSkelRoot = false;
+    for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot())) {
+        if (prim.IsA<UsdSkelRoot>()) {
+            const UsdSkelRoot skelRoot(prim);
+            cache->Populate(skelRoot, UsdTraverseInstanceProxies());
+            std::vector<UsdSkelBinding> bindings;
+            if (cache->ComputeSkelBindings(
+                    skelRoot,
+                    &bindings,
+                    UsdTraverseInstanceProxies())) {
+                for (const UsdSkelBinding& binding : bindings) {
+                    for (const UsdSkelSkinningQuery& skinningQuery :
+                         binding.GetSkinningTargets()) {
+                        skeletonByPrim[
+                            skinningQuery.GetPrim().GetPath().GetString()] =
+                            binding.GetSkeleton();
+                    }
+                }
+            }
+            hasSkelRoot = true;
+        }
+    }
+
+    g_stageHasSkelRoot[path] = hasSkelRoot;
+    if (!hasSkelRoot) {
+        return nullptr;
+    }
+
+    UsdSkelCache* result = cache.get();
+    g_skelCache[path] = std::move(cache);
+    return result;
+}
+
+UsdSkelSkeleton
+_FindSkeletonForSkinnedPrim(const std::string& stagePath, const UsdPrim& prim)
+{
+    auto stageIt = g_skinningSkeletonByStageAndPrim.find(stagePath);
+    if (stageIt == g_skinningSkeletonByStageAndPrim.end()) {
+        return UsdSkelSkeleton();
+    }
+    auto primIt = stageIt->second.find(prim.GetPath().GetString());
+    if (primIt != stageIt->second.end()) {
+        return primIt->second;
+    }
+
+    UsdPrim skeleton = _InferSkeletonForSkelBoundPrim(prim);
+    return skeleton ? UsdSkelSkeleton(skeleton) : UsdSkelSkeleton();
 }
 
 } // namespace
@@ -887,7 +2114,7 @@ emscripten::val
 InspectPrimRelationships(const std::string& stagePath, const std::string& primPath)
 {
     emscripten::val result = emscripten::val::array();
-    UsdStageRefPtr stage = UsdStage::Open(stagePath);
+    UsdStageRefPtr stage = _GetOrOpenStage(stagePath);
     if (!stage) {
         return result;
     }
@@ -934,8 +2161,223 @@ InspectPrimRelationships(const std::string& stagePath, const std::string& primPa
     return result;
 }
 
+double
+_MaxMatrixDelta(const VtArray<GfMatrix4d>& a, const VtArray<GfMatrix4d>& b)
+{
+    double maxDelta = 0.0;
+    const size_t count = std::min(a.size(), b.size());
+    for (size_t matrixIndex = 0; matrixIndex < count; ++matrixIndex) {
+        for (int row = 0; row < 4; ++row) {
+            for (int col = 0; col < 4; ++col) {
+                maxDelta = std::max(
+                    maxDelta,
+                    std::abs(a[matrixIndex][row][col] - b[matrixIndex][row][col]));
+            }
+        }
+    }
+    return maxDelta;
+}
+
 emscripten::val
-ExtractRenderables(const std::string& path)
+GetSkelDebugInfo(
+    const std::string& stagePath,
+    const std::string& primPath,
+    double timeA,
+    double timeB)
+{
+    emscripten::val info = emscripten::val::object();
+    UsdStageRefPtr stage = _GetOrOpenStage(stagePath);
+    info.set("stageOpened", static_cast<bool>(stage));
+    if (!stage) {
+        return info;
+    }
+
+    UsdPrim prim = stage->GetPrimAtPath(SdfPath(primPath));
+    info.set("primFound", static_cast<bool>(prim));
+    if (!prim) {
+        return info;
+    }
+
+    info.set("primType", prim.GetTypeName().GetString());
+    info.set("hasBindingApi", prim.HasAPI<UsdSkelBindingAPI>());
+
+    UsdSkelBindingAPI binding(prim);
+    UsdSkelSkeleton directSkeleton;
+    const bool hasDirectSkeleton = binding.GetSkeleton(&directSkeleton);
+    info.set("hasDirectSkeletonResult", hasDirectSkeleton);
+    info.set("directSkeletonPath", directSkeleton
+        ? directSkeleton.GetPrim().GetPath().GetString()
+        : std::string());
+
+    UsdSkelSkeleton inheritedSkeleton = binding.GetInheritedSkeleton();
+    info.set("inheritedSkeletonPath", inheritedSkeleton
+        ? inheritedSkeleton.GetPrim().GetPath().GetString()
+        : std::string());
+
+    UsdSkelCache* skelCache = _GetOrPopulateSkelCache(stagePath, stage);
+    info.set("hasSkelCache", skelCache != nullptr);
+    auto authoredIt = g_authoredLegacySkelBindingTargets.find(stagePath);
+    info.set(
+        "authoredLegacySkelBindingTargetCount",
+        authoredIt == g_authoredLegacySkelBindingTargets.end()
+            ? 0
+            : authoredIt->second);
+    auto authoringDiagIt =
+        g_legacySkelBindingAuthoringDiagnostics.find(stagePath);
+    if (authoringDiagIt != g_legacySkelBindingAuthoringDiagnostics.end()) {
+        const LegacySkelBindingAuthoringDiagnostics& diag =
+            authoringDiagIt->second;
+        info.set("legacyAuthorSkeletonPrims", diag.skeletonPrims);
+        info.set("legacyAuthorAnimationTargets", diag.animationTargets);
+        info.set("legacyAuthorMeshPrims", diag.meshPrims);
+        info.set("legacyAuthorMeshSkinningQueries", diag.meshSkinningQueries);
+        info.set("legacyAuthorMeshInferredSkeletons", diag.meshInferredSkeletons);
+        info.set("legacyAuthorRelationshipSpecs", diag.relationshipSpecs);
+    }
+    int skelRootCount = 0;
+    int skelBindingCount = 0;
+    int skelBindingTargetCount = 0;
+    if (skelCache) {
+        for (const UsdPrim& skelRootPrim : UsdPrimRange(stage->GetPseudoRoot())) {
+            if (!skelRootPrim.IsA<UsdSkelRoot>()) {
+                continue;
+            }
+            ++skelRootCount;
+            std::vector<UsdSkelBinding> bindings;
+            if (skelCache->ComputeSkelBindings(
+                    UsdSkelRoot(skelRootPrim),
+                    &bindings,
+                    UsdTraverseInstanceProxies())) {
+                skelBindingCount += static_cast<int>(bindings.size());
+                for (const UsdSkelBinding& binding : bindings) {
+                    skelBindingTargetCount +=
+                        static_cast<int>(binding.GetSkinningTargets().size());
+                }
+            }
+        }
+    }
+    info.set("skelRootCount", skelRootCount);
+    info.set("skelBindingCount", skelBindingCount);
+    info.set("skelBindingTargetCount", skelBindingTargetCount);
+    UsdSkelSkeleton mappedSkeleton = _FindSkeletonForSkinnedPrim(stagePath, prim);
+    info.set("mappedSkeletonPath", mappedSkeleton
+        ? mappedSkeleton.GetPrim().GetPath().GetString()
+        : std::string());
+
+    if (!skelCache) {
+        return info;
+    }
+
+    if (UsdSkelSkinningQuery skinningQuery = skelCache->GetSkinningQuery(prim)) {
+        info.set("hasSkinningQuery", true);
+        info.set("hasBlendShapes", skinningQuery.HasBlendShapes());
+        info.set(
+            "numInfluencesPerComponent",
+            skinningQuery.GetNumInfluencesPerComponent());
+        VtTokenArray skinningJointOrder;
+        if (skinningQuery.GetJointOrder(&skinningJointOrder)) {
+            info.set(
+                "skinningJointOrderCount",
+                static_cast<int>(skinningJointOrder.size()));
+        }
+        VtTokenArray blendShapeOrder;
+        if (skinningQuery.GetBlendShapeOrder(&blendShapeOrder)) {
+            info.set(
+                "blendShapeOrderCount",
+                static_cast<int>(blendShapeOrder.size()));
+        }
+        VtArray<int> jointIndices;
+        VtArray<float> jointWeights;
+        const bool hasInfluences = skinningQuery.ComputeJointInfluences(
+            &jointIndices,
+            &jointWeights,
+            UsdTimeCode(timeA));
+        info.set("hasJointInfluences", hasInfluences);
+        info.set("jointIndexCount", static_cast<int>(jointIndices.size()));
+        info.set("jointWeightCount", static_cast<int>(jointWeights.size()));
+    } else {
+        info.set("hasSkinningQuery", false);
+    }
+
+    UsdSkelSkeleton skeleton =
+        mappedSkeleton ? mappedSkeleton :
+        inheritedSkeleton ? inheritedSkeleton :
+        directSkeleton;
+    info.set("debugSkeletonPath", skeleton
+        ? skeleton.GetPrim().GetPath().GetString()
+        : std::string());
+
+    if (!skeleton) {
+        return info;
+    }
+
+    UsdPrim animationPrim;
+    UsdSkelBindingAPI(skeleton.GetPrim()).GetAnimationSource(&animationPrim);
+    info.set("animationSourcePath", animationPrim
+        ? animationPrim.GetPath().GetString()
+        : std::string());
+
+    UsdSkelSkeletonQuery skelQuery = skelCache->GetSkelQuery(skeleton);
+    info.set("hasSkeletonQuery", static_cast<bool>(skelQuery));
+    if (!skelQuery) {
+        return info;
+    }
+
+    const UsdSkelAnimQuery& animQuery = skelQuery.GetAnimQuery();
+    info.set("animQueryPath", animQuery
+        ? animQuery.GetPrim().GetPath().GetString()
+        : std::string());
+
+    VtArray<GfMatrix4d> localA;
+    VtArray<GfMatrix4d> localB;
+    VtArray<GfMatrix4d> skinA;
+    VtArray<GfMatrix4d> skinB;
+    info.set(
+        "localAComputed",
+        skelQuery.ComputeJointLocalTransforms(&localA, UsdTimeCode(timeA)));
+    info.set(
+        "localBComputed",
+        skelQuery.ComputeJointLocalTransforms(&localB, UsdTimeCode(timeB)));
+    info.set("localJointCountA", static_cast<int>(localA.size()));
+    info.set("localJointCountB", static_cast<int>(localB.size()));
+    info.set("localMaxDelta", _MaxMatrixDelta(localA, localB));
+
+    info.set(
+        "skinAComputed",
+        skelQuery.ComputeSkinningTransforms(&skinA, UsdTimeCode(timeA)));
+    info.set(
+        "skinBComputed",
+        skelQuery.ComputeSkinningTransforms(&skinB, UsdTimeCode(timeB)));
+    info.set("skinJointCountA", static_cast<int>(skinA.size()));
+    info.set("skinJointCountB", static_cast<int>(skinB.size()));
+    info.set("skinMaxDelta", _MaxMatrixDelta(skinA, skinB));
+
+    VtArray<GfMatrix4d> inferredSkinA;
+    VtArray<GfMatrix4d> inferredSkinB;
+    info.set(
+        "inferredSkinAComputed",
+        _ComputeInferredSkinningTransforms(
+            skelCache,
+            skeleton,
+            UsdTimeCode(timeA),
+            &inferredSkinA,
+            &info));
+    info.set(
+        "inferredSkinBComputed",
+        _ComputeInferredSkinningTransforms(
+            skelCache,
+            skeleton,
+            UsdTimeCode(timeB),
+            &inferredSkinB));
+    info.set("inferredSkinJointCountA", static_cast<int>(inferredSkinA.size()));
+    info.set("inferredSkinJointCountB", static_cast<int>(inferredSkinB.size()));
+    info.set("inferredSkinMaxDelta", _MaxMatrixDelta(inferredSkinA, inferredSkinB));
+
+    return info;
+}
+
+emscripten::val
+_ExtractRenderablesAtTime(const std::string& path, UsdTimeCode timeCode, bool includeMaterials)
 {
     emscripten::val renderables = emscripten::val::array();
     UsdStageRefPtr stage = _GetOrOpenStage(path);
@@ -943,9 +2385,10 @@ ExtractRenderables(const std::string& path)
         return renderables;
     }
 
-    UsdGeomXformCache xformCache(stage->GetStartTimeCode());
+    UsdGeomXformCache xformCache(timeCode);
     UsdShadeMaterialBindingAPI::BindingsCache bindingsCache;
     UsdShadeMaterialBindingAPI::CollectionQueryCache collectionQueryCache;
+    UsdSkelCache* skelCache = _GetOrPopulateSkelCache(path, stage);
 
     // For USDZ files the root layer identifier is a package-relative path like
     // "file.usdz[Root.usdc]". Strip the inner component so we hold just the
@@ -968,7 +2411,13 @@ ExtractRenderables(const std::string& path)
 
         UsdGeomMesh mesh(prim);
         MeshPayload payload;
-        if (!_ExtractMeshPayload(mesh, &payload)) {
+        if (!_ExtractMeshPayload(
+                mesh,
+                &payload,
+                timeCode,
+                skelCache,
+                _FindSkeletonForSkinnedPrim(path, prim),
+                &xformCache)) {
             continue;
         }
 
@@ -982,18 +2431,46 @@ ExtractRenderables(const std::string& path)
         }
         renderable.set("matrix", _MatrixArray(xformCache.GetLocalToWorldTransform(prim)));
         renderable.set("color", _ColorArray(mesh));
-        renderable.set(
-            "material",
-            _ExtractMaterial(
-                prim,
-                packageRootPath,
-                &bindingsCache,
-                &collectionQueryCache,
-                renderable["color"]));
+        if (includeMaterials) {
+            renderable.set(
+                "material",
+                _ExtractMaterial(
+                    prim,
+                    packageRootPath,
+                    &bindingsCache,
+                    &collectionQueryCache,
+                    renderable["color"]));
+        }
         renderables.set(renderableIndex++, renderable);
     }
 
     return renderables;
+}
+
+emscripten::val
+ExtractRenderables(const std::string& path)
+{
+    UsdStageRefPtr stage = _GetOrOpenStage(path);
+    return _ExtractRenderablesAtTime(
+        path,
+        stage ? UsdTimeCode(stage->GetStartTimeCode()) : UsdTimeCode::Default(),
+        false);
+}
+
+emscripten::val
+ExtractRenderablesWithMaterials(const std::string& path)
+{
+    UsdStageRefPtr stage = _GetOrOpenStage(path);
+    return _ExtractRenderablesAtTime(
+        path,
+        stage ? UsdTimeCode(stage->GetStartTimeCode()) : UsdTimeCode::Default(),
+        true);
+}
+
+emscripten::val
+ExtractRenderablesAtTime(const std::string& path, double timeCode)
+{
+    return _ExtractRenderablesAtTime(path, UsdTimeCode(timeCode), false);
 }
 
 emscripten::val
@@ -1149,6 +2626,7 @@ bool
 ReopenStage(const std::string& stagePath)
 {
     SdfLayerHandle layer = SdfLayer::Find(stagePath);
+    _InvalidateDerivedStageCaches(stagePath);
 
     if (layer && g_stageCache.count(stagePath)) {
         // Fast path: reload fires SdfNotice::LayersDidChange to the living
@@ -1198,6 +2676,7 @@ SetVariantSelection(
         UsdEditContext ctx(stage, stage->GetSessionLayer());
         vs.SetVariantSelection(selection);
     }
+    _InvalidateDerivedStageCaches(stagePath);
     return vs.GetVariantSelection() == selection;
 }
 
@@ -1216,6 +2695,7 @@ SetPayloadLoaded(
     } else {
         stage->Unload(path);
     }
+    _InvalidateDerivedStageCaches(stagePath);
     const UsdPrim prim = stage->GetPrimAtPath(path);
     return prim && prim.IsLoaded() == loaded;
 }
@@ -1238,6 +2718,394 @@ SetAllPayloadsLoaded(const std::string& stagePath, bool loaded)
             }
         }
     }
+    _InvalidateDerivedStageCaches(stagePath);
+}
+
+emscripten::val
+ExtractGaussianSplats(const std::string& path)
+{
+    emscripten::val result = emscripten::val::array();
+    UsdStageRefPtr stage = _GetOrOpenStage(path);
+    if (!stage) return result;
+
+    UsdGeomXformCache xformCache(stage->GetStartTimeCode());
+    size_t splatIndex = 0;
+
+    static const TfToken kType("ParticleField3DGaussianSplat");
+    static const TfToken kPositions("positions");
+    static const TfToken kPositionsH("positionsh");
+    static const TfToken kScales("scales");
+    static const TfToken kScalesH("scalesh");
+    static const TfToken kOrientations("orientations");
+    static const TfToken kOrientationsH("orientationsh");
+    static const TfToken kOpacities("opacities");
+    static const TfToken kOpacitiesH("opacitiesh");
+    static const TfToken kSHCoeffs("radiance:sphericalHarmonicsCoefficients");
+    static const TfToken kSHDegree("radiance:sphericalHarmonicsDegree");
+
+    for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot())) {
+        if (prim.GetTypeName() != kType) {
+            continue;
+        }
+
+        // --- Positions ---
+        std::vector<float> posOut;
+        {
+            VtArray<GfVec3f> arr;
+            if (prim.GetAttribute(kPositions).Get(&arr) && !arr.empty()) {
+                posOut.reserve(arr.size() * 3);
+                for (const auto& v : arr) {
+                    posOut.push_back(v[0]);
+                    posOut.push_back(v[1]);
+                    posOut.push_back(v[2]);
+                }
+            } else {
+                VtArray<GfVec3h> arrh;
+                if (prim.GetAttribute(kPositionsH).Get(&arrh) && !arrh.empty()) {
+                    posOut.reserve(arrh.size() * 3);
+                    for (const auto& v : arrh) {
+                        posOut.push_back(static_cast<float>(v[0]));
+                        posOut.push_back(static_cast<float>(v[1]));
+                        posOut.push_back(static_cast<float>(v[2]));
+                    }
+                }
+            }
+        }
+        if (posOut.empty()) continue;
+        const size_t count = posOut.size() / 3;
+
+        // --- Scales ---
+        std::vector<float> scaleOut;
+        {
+            VtArray<GfVec3f> arr;
+            if (prim.GetAttribute(kScales).Get(&arr) && !arr.empty()) {
+                scaleOut.reserve(arr.size() * 3);
+                for (const auto& v : arr) {
+                    scaleOut.push_back(v[0]);
+                    scaleOut.push_back(v[1]);
+                    scaleOut.push_back(v[2]);
+                }
+            } else {
+                VtArray<GfVec3h> arrh;
+                if (prim.GetAttribute(kScalesH).Get(&arrh) && !arrh.empty()) {
+                    scaleOut.reserve(arrh.size() * 3);
+                    for (const auto& v : arrh) {
+                        scaleOut.push_back(static_cast<float>(v[0]));
+                        scaleOut.push_back(static_cast<float>(v[1]));
+                        scaleOut.push_back(static_cast<float>(v[2]));
+                    }
+                }
+            }
+        }
+
+        // --- Orientations → [x, y, z, w] per splat ---
+        std::vector<float> orientOut;
+        {
+            VtArray<GfQuatf> arr;
+            if (prim.GetAttribute(kOrientations).Get(&arr) && !arr.empty()) {
+                orientOut.reserve(arr.size() * 4);
+                for (const auto& q : arr) {
+                    orientOut.push_back(q.GetImaginary()[0]);
+                    orientOut.push_back(q.GetImaginary()[1]);
+                    orientOut.push_back(q.GetImaginary()[2]);
+                    orientOut.push_back(q.GetReal());
+                }
+            } else {
+                VtArray<GfQuath> arrh;
+                if (prim.GetAttribute(kOrientationsH).Get(&arrh) && !arrh.empty()) {
+                    orientOut.reserve(arrh.size() * 4);
+                    for (const auto& q : arrh) {
+                        orientOut.push_back(static_cast<float>(q.GetImaginary()[0]));
+                        orientOut.push_back(static_cast<float>(q.GetImaginary()[1]));
+                        orientOut.push_back(static_cast<float>(q.GetImaginary()[2]));
+                        orientOut.push_back(static_cast<float>(q.GetReal()));
+                    }
+                }
+            }
+        }
+
+        // --- Opacities ---
+        std::vector<float> opacOut;
+        {
+            VtArray<float> arr;
+            if (prim.GetAttribute(kOpacities).Get(&arr) && !arr.empty()) {
+                opacOut.assign(arr.begin(), arr.end());
+            } else {
+                VtArray<GfHalf> arrh;
+                if (prim.GetAttribute(kOpacitiesH).Get(&arrh) && !arrh.empty()) {
+                    opacOut.reserve(arrh.size());
+                    for (const auto& h : arrh) {
+                        opacOut.push_back(static_cast<float>(h));
+                    }
+                }
+            }
+        }
+
+        // --- SH Coefficients (all degrees, stored as count*coeffsPerSplat vec3fs) ---
+        std::vector<float> shOut;
+        int shDegree = 0;
+        {
+            VtArray<GfVec3f> arr;
+            if (prim.GetAttribute(kSHCoeffs).Get(&arr) && !arr.empty()) {
+                shOut.reserve(arr.size() * 3);
+                for (const auto& v : arr) {
+                    shOut.push_back(v[0]);
+                    shOut.push_back(v[1]);
+                    shOut.push_back(v[2]);
+                }
+                // Infer degree from total coefficient count
+                const size_t coeffsPerSplat = arr.size() / count;
+                for (int d = 0; d <= 3; ++d) {
+                    if (static_cast<size_t>((d + 1) * (d + 1)) == coeffsPerSplat) {
+                        shDegree = d;
+                        break;
+                    }
+                }
+            }
+            // Authored degree overrides inferred one
+            int authoredDegree = 0;
+            if (prim.GetAttribute(kSHDegree).Get(&authoredDegree)) {
+                shDegree = authoredDegree;
+            }
+        }
+
+        emscripten::val entry = emscripten::val::object();
+        entry.set("path", prim.GetPath().GetString());
+        entry.set("name", prim.GetName().GetString());
+        entry.set("count", static_cast<int>(count));
+        entry.set("matrix", _MatrixArray(xformCache.GetLocalToWorldTransform(prim)));
+        entry.set("positions", _Float32Array(posOut));
+        entry.set("scales", _Float32Array(scaleOut));
+        entry.set("orientations", _Float32Array(orientOut));
+        entry.set("opacities", _Float32Array(opacOut));
+        if (!shOut.empty()) {
+            entry.set("shCoeffs", _Float32Array(shOut));
+            entry.set("shDegree", shDegree);
+        }
+        result.set(splatIndex++, entry);
+    }
+
+    return result;
+}
+
+HydraAnimationDriver*
+_GetOrCreateHydraAnimationDriver(const std::string& stagePath)
+{
+    auto it = g_hydraAnimationDrivers.find(stagePath);
+    if (it != g_hydraAnimationDrivers.end()) {
+        return it->second.get();
+    }
+
+    UsdStageRefPtr stage = _GetOrOpenStage(stagePath);
+    if (!stage) {
+        return nullptr;
+    }
+
+    g_skelCache.erase(stagePath);
+    g_stageHasSkelRoot.erase(stagePath);
+    g_skinningSkeletonByStageAndPrim.erase(stagePath);
+    _GetOrPopulateSkelCache(stagePath, stage);
+    auto driver = std::make_unique<HydraAnimationDriver>(stagePath, stage);
+    HydraAnimationDriver* ptr = driver.get();
+    g_hydraAnimationDrivers[stagePath] = std::move(driver);
+    return ptr;
+}
+
+bool
+_ExpandHydraUpdateToFaceVertices(
+    const UsdStageRefPtr& stage,
+    SdfPath const& primPath,
+    UsdTimeCode timeCode,
+    HydraMeshUpdate* update)
+{
+    if (!stage || !update || update->points.empty()) {
+        return false;
+    }
+
+    UsdPrim prim = stage->GetPrimAtPath(primPath);
+    if (!prim || !prim.IsA<UsdGeomMesh>()) {
+        return false;
+    }
+
+    UsdGeomMesh mesh(prim);
+    VtArray<int> faceVertexCounts;
+    VtArray<int> faceVertexIndices;
+    if (!mesh.GetFaceVertexCountsAttr().Get(&faceVertexCounts) ||
+        !mesh.GetFaceVertexIndicesAttr().Get(&faceVertexIndices) ||
+        faceVertexCounts.empty() ||
+        faceVertexIndices.empty()) {
+        return false;
+    }
+
+    const size_t pointCount = update->points.size() / 3;
+    VtArray<GfVec2f> uvValues;
+    TfToken uvInterpolation;
+    UsdGeomPrimvar stPrimvar = UsdGeomPrimvarsAPI(mesh).GetPrimvar(TfToken("st"));
+    const bool hasUvValues =
+        stPrimvar &&
+        stPrimvar.ComputeFlattened(&uvValues, timeCode) &&
+        !uvValues.empty();
+    if (hasUvValues) {
+        uvInterpolation = stPrimvar.GetInterpolation();
+    }
+
+    std::vector<float> expandedPoints;
+    std::vector<float> expandedUvs;
+    std::vector<int> expandedIndices;
+    expandedPoints.reserve(faceVertexIndices.size() * 3);
+    expandedIndices.reserve(faceVertexIndices.size());
+    if (hasUvValues) {
+        expandedUvs.reserve(faceVertexIndices.size() * 2);
+    }
+
+    auto appendVertex = [&](size_t faceVertexOffset) {
+        const int pointIndex = faceVertexIndices[faceVertexOffset];
+        if (pointIndex < 0 || static_cast<size_t>(pointIndex) >= pointCount) {
+            return false;
+        }
+
+        const size_t pointOffset = static_cast<size_t>(pointIndex) * 3;
+        expandedPoints.push_back(update->points[pointOffset]);
+        expandedPoints.push_back(update->points[pointOffset + 1]);
+        expandedPoints.push_back(update->points[pointOffset + 2]);
+        expandedIndices.push_back(static_cast<int>((expandedPoints.size() / 3) - 1));
+
+        if (hasUvValues) {
+            GfVec2f uv(0.0f, 0.0f);
+            if (_GetUvForFaceVertex(
+                    uvValues,
+                    uvInterpolation,
+                    faceVertexOffset,
+                    pointIndex,
+                    &uv)) {
+                expandedUvs.push_back(uv[0]);
+                expandedUvs.push_back(uv[1]);
+            }
+        }
+
+        return true;
+    };
+
+    size_t offset = 0;
+    for (int faceVertexCount : faceVertexCounts) {
+        if (faceVertexCount < 3 ||
+            offset + static_cast<size_t>(faceVertexCount) > faceVertexIndices.size()) {
+            offset += std::max(faceVertexCount, 0);
+            continue;
+        }
+
+        for (int i = 1; i < faceVertexCount - 1; ++i) {
+            if (!appendVertex(offset) ||
+                !appendVertex(offset + i) ||
+                !appendVertex(offset + i + 1)) {
+                return false;
+            }
+        }
+
+        offset += faceVertexCount;
+    }
+
+    if (expandedPoints.empty() || expandedIndices.empty()) {
+        return false;
+    }
+
+    if (expandedUvs.size() != (expandedPoints.size() / 3) * 2) {
+        expandedUvs.clear();
+    }
+
+    update->points = std::move(expandedPoints);
+    update->triangleIndices = std::move(expandedIndices);
+    update->uvs = std::move(expandedUvs);
+    return true;
+}
+
+emscripten::val
+ExtractHydraRenderablesAtTime(const std::string& stagePath, double timeCode)
+{
+    emscripten::val result = emscripten::val::array();
+    HydraAnimationDriver* driver = _GetOrCreateHydraAnimationDriver(stagePath);
+    if (!driver || !driver->renderIndex || !driver->imagingDelegate) {
+        return result;
+    }
+
+    driver->collector.Clear();
+    driver->imagingDelegate->SetTime(UsdTimeCode(timeCode));
+    driver->imagingDelegate->ApplyPendingUpdates();
+    driver->imagingDelegate->SyncAll(true);
+
+    UsdSkelCache* skelCache = _GetOrPopulateSkelCache(stagePath, driver->stage);
+    UsdGeomXformCache xformCache{UsdTimeCode(timeCode)};
+
+    for (SdfPath const& id : driver->renderIndex->GetRprimIds()) {
+        UsdPrim prim = driver->stage->GetPrimAtPath(id);
+        if (!prim || !prim.IsA<UsdGeomMesh>()) {
+            continue;
+        }
+
+        HydraMeshUpdate update;
+        if (_BuildHydraMeshUpdate(
+                driver->renderIndex.get(),
+                id,
+                &update,
+                std::numeric_limits<float>::epsilon())) {
+            if (!update.usedComputedPoints && skelCache) {
+                MeshPayload payload;
+                if (_ExtractMeshPayload(
+                        UsdGeomMesh(prim),
+                        &payload,
+                        UsdTimeCode(timeCode),
+                        skelCache,
+                        _FindSkeletonForSkinnedPrim(stagePath, prim),
+                        &xformCache)) {
+                    update.usdSkelFallbackAvailable = true;
+                }
+            }
+            _ExpandHydraUpdateToFaceVertices(
+                driver->stage,
+                id,
+                UsdTimeCode(timeCode),
+                &update);
+            driver->collector.Record(std::move(update));
+        }
+    }
+
+    size_t index = 0;
+    for (const auto& entry : driver->collector.updates) {
+        const HydraMeshUpdate& update = entry.second;
+        emscripten::val renderable = emscripten::val::object();
+        renderable.set("path", update.path);
+        renderable.set("name", update.name);
+        renderable.set("points", _FloatArray(update.points));
+        renderable.set("indices", _IntArray(update.triangleIndices));
+        if (!update.uvs.empty()) {
+            renderable.set("uvs", _FloatArray(update.uvs));
+        }
+        renderable.set("matrix", _MatrixArray(update.matrix));
+        renderable.set("pointComputationCount", update.pointComputationCount);
+        renderable.set("sceneIndexChildCount", update.sceneIndexChildCount);
+        renderable.set("sceneIndexHasSkelRoot", update.sceneIndexHasSkelRoot);
+        renderable.set("sceneIndexSkeletonPath", update.sceneIndexSkeletonPath);
+        renderable.set("sceneIndexAnimationSourcePath", update.sceneIndexAnimationSourcePath);
+        renderable.set("sceneIndexAnimationPrimType", update.sceneIndexAnimationPrimType);
+        renderable.set("sceneIndexAnimationJointCount", update.sceneIndexAnimationJointCount);
+        renderable.set("sceneIndexAnimationTranslationCount", update.sceneIndexAnimationTranslationCount);
+        renderable.set("sceneIndexAnimationTranslationSum", update.sceneIndexAnimationTranslationSum);
+        renderable.set("sceneIndexAnimationRotationCount", update.sceneIndexAnimationRotationCount);
+        renderable.set("sceneIndexAnimationRotationSum", update.sceneIndexAnimationRotationSum);
+        renderable.set("sceneIndexAnimationScaleCount", update.sceneIndexAnimationScaleCount);
+        renderable.set("sceneIndexAnimationScaleSum", update.sceneIndexAnimationScaleSum);
+        renderable.set("sceneIndexSkinningTransformCount", update.sceneIndexSkinningTransformCount);
+        renderable.set("sceneIndexSkinningTransformSum", update.sceneIndexSkinningTransformSum);
+        renderable.set("sceneIndexSkinningTransformWeightedSum", update.sceneIndexSkinningTransformWeightedSum);
+        renderable.set("hydraCreatedMeshRprimCount", driver->collector.diagnostics.createdMeshRprims);
+        renderable.set("hydraCreatedExtComputationCount", driver->collector.diagnostics.createdExtComputations);
+        renderable.set("hydraCreatedMaterialCount", driver->collector.diagnostics.createdMaterials);
+        renderable.set("usedComputedPoints", update.usedComputedPoints);
+        renderable.set("usdSkelFallbackAvailable", update.usdSkelFallbackAvailable);
+        result.set(index++, renderable);
+    }
+
+    return result;
 }
 
 EMSCRIPTEN_BINDINGS(usdWebViewBindings)
@@ -1245,7 +3113,11 @@ EMSCRIPTEN_BINDINGS(usdWebViewBindings)
     emscripten::function("InitializeRuntime", &InitializeRuntime);
     emscripten::function("GetRuntimeDiagnostics", &GetRuntimeDiagnostics);
     emscripten::function("InspectPrimRelationships", &InspectPrimRelationships);
+    emscripten::function("GetSkelDebugInfo", &GetSkelDebugInfo);
     emscripten::function("ExtractRenderables", &ExtractRenderables);
+    emscripten::function("ExtractRenderablesWithMaterials", &ExtractRenderablesWithMaterials);
+    emscripten::function("ExtractRenderablesAtTime", &ExtractRenderablesAtTime);
+    emscripten::function("ExtractHydraRenderablesAtTime", &ExtractHydraRenderablesAtTime);
     emscripten::function("ExtractTransformsAtTime", &ExtractTransformsAtTime);
     emscripten::function("OpenStage", &OpenStage);
     emscripten::function("GetSceneGraph", &GetSceneGraph);
@@ -1254,4 +3126,5 @@ EMSCRIPTEN_BINDINGS(usdWebViewBindings)
     emscripten::function("SetVariantSelection", &SetVariantSelection);
     emscripten::function("SetPayloadLoaded", &SetPayloadLoaded);
     emscripten::function("SetAllPayloadsLoaded", &SetAllPayloadsLoaded);
+    emscripten::function("ExtractGaussianSplats", &ExtractGaussianSplats);
 }

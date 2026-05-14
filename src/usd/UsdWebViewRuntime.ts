@@ -2,6 +2,7 @@ import type {
   UsdWebViewBindings,
   PrimAttribute,
   PrimTransform,
+  RenderableGaussianSplat,
   RenderableMesh,
   RuntimeStatus,
   SceneGraphPrim,
@@ -94,8 +95,15 @@ export class UsdWebViewRuntime {
     }
 
     const renderables = this.bindings.extractRenderables?.(rootPath) ?? [];
+    const gaussianSplats = this.bindings.extractGaussianSplats?.(rootPath) ?? [];
     this.currentStagePath = rootPath;
-    return { summary: normalizedSummary, renderables };
+
+    // Temporary debug: log all unique type names in the stage
+    const sg = this.bindings.getSceneGraph?.(rootPath) ?? [];
+    const types = [...new Set(sg.map(p => p.typeName || "(none)"))].sort();
+    console.log("[Debug] Stage prim count:", sg.length, "| Types:", types.join(", "));
+
+    return { summary: normalizedSummary, renderables, gaussianSplats };
   }
 
   extractTransformsAtTime(timeCode: number): PrimTransform[] {
@@ -103,6 +111,20 @@ export class UsdWebViewRuntime {
       return [];
     }
     return this.bindings.extractTransformsAtTime(this.currentStagePath, timeCode);
+  }
+
+  extractRenderablesAtTime(timeCode: number): RenderableMesh[] {
+    if (!this.bindings?.extractRenderablesAtTime || !this.currentStagePath) {
+      return [];
+    }
+    return this.bindings.extractRenderablesAtTime(this.currentStagePath, timeCode);
+  }
+
+  extractHydraRenderablesAtTime(timeCode: number): RenderableMesh[] {
+    if (!this.bindings?.extractHydraRenderablesAtTime || !this.currentStagePath) {
+      return [];
+    }
+    return this.bindings.extractHydraRenderablesAtTime(this.currentStagePath, timeCode);
   }
 
   getSceneGraph(): SceneGraphPrim[] {
@@ -118,6 +140,16 @@ export class UsdWebViewRuntime {
   extractRenderables(): RenderableMesh[] {
     if (!this.bindings?.extractRenderables || !this.currentStagePath) return [];
     return this.bindings.extractRenderables(this.currentStagePath);
+  }
+
+  extractRenderablesWithMaterials(): RenderableMesh[] {
+    if (!this.bindings?.extractRenderablesWithMaterials || !this.currentStagePath) return [];
+    return this.bindings.extractRenderablesWithMaterials(this.currentStagePath);
+  }
+
+  extractGaussianSplats(): RenderableGaussianSplat[] {
+    if (!this.bindings?.extractGaussianSplats || !this.currentStagePath) return [];
+    return this.bindings.extractGaussianSplats(this.currentStagePath);
   }
 
   setVariantSelection(primPath: string, variantSetName: string, selection: string): boolean {

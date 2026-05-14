@@ -1,10 +1,9 @@
 import "./style.css";
 import { UsdWebViewRuntime } from "./usd/UsdWebViewRuntime";
 import { collectDroppedFiles, pickLikelyRootFile } from "./usd/fileIntake";
-import type { PrimAttribute, RuntimeStatus, SceneGraphPrim, StageSummary } from "./usd/types";
+import type { PrimAttribute, RuntimeStatus, SceneGraphPrim, StageLoadResult, StageSummary } from "./usd/types";
 
-let lastStageSummary: StageSummary | null = null;
-import { ThreeViewport } from "./viewer/ThreeViewport";
+import { ThreeViewport, type NavigationMode, type ViewUpAxis } from "./viewer/ThreeViewport";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -33,8 +32,60 @@ app.innerHTML = `
         <button class="menu-btn">View</button>
         <ul class="menu-dropdown">
           <li><button class="menu-option" id="menuStats">Stats</button></li>
-          <li><button class="menu-option" id="menuLoadAllPayloads">Load All Payloads</button></li>
-          <li><button class="menu-option" id="menuUnloadAllPayloads">Unload All Payloads</button></li>
+          <li class="menu-separator" role="separator"></li>
+          <li class="menu-submenu">
+            <button class="menu-option menu-submenu-trigger">Navigation</button>
+            <ul class="menu-dropdown menu-submenu-dropdown">
+              <li><button class="menu-option" data-navigation-mode="orbital">Orbital</button></li>
+              <li><button class="menu-option" data-navigation-mode="game">Game Engine</button></li>
+              <li class="menu-separator" role="separator"></li>
+              <li class="menu-submenu">
+                <button class="menu-option menu-submenu-trigger">Camera Speed</button>
+                <ul class="menu-dropdown menu-submenu-dropdown">
+                  <li><button class="menu-option" data-camera-speed="0.5">0.5x</button></li>
+                  <li><button class="menu-option" data-camera-speed="1">1x</button></li>
+                  <li><button class="menu-option" data-camera-speed="2">2x</button></li>
+                  <li><button class="menu-option" data-camera-speed="5">5x</button></li>
+                  <li><button class="menu-option" data-camera-speed="10">10x</button></li>
+                </ul>
+              </li>
+            </ul>
+          </li>
+          <li class="menu-submenu">
+            <button class="menu-option menu-submenu-trigger">Up Axis</button>
+            <ul class="menu-dropdown menu-submenu-dropdown">
+              <li><button class="menu-option" data-up-axis="stage">From Stage</button></li>
+              <li class="menu-separator" role="separator"></li>
+              <li><button class="menu-option" data-up-axis="y">Y Up</button></li>
+              <li><button class="menu-option" data-up-axis="z">Z Up</button></li>
+            </ul>
+          </li>
+          <li class="menu-separator" role="separator"></li>
+          <li class="menu-submenu">
+            <button class="menu-option menu-submenu-trigger">Splat Fidelity</button>
+            <ul class="menu-dropdown menu-submenu-dropdown">
+              <li><button class="menu-option" data-splat-fidelity="0">Base Color</button></li>
+              <li><button class="menu-option" data-splat-fidelity="1">Low SH</button></li>
+              <li><button class="menu-option" data-splat-fidelity="2">High SH</button></li>
+              <li><button class="menu-option" data-splat-fidelity="3">Full SH</button></li>
+            </ul>
+          </li>
+          <li class="menu-submenu">
+            <button class="menu-option menu-submenu-trigger">Splat Detail</button>
+            <ul class="menu-dropdown menu-submenu-dropdown">
+              <li><button class="menu-option" data-splat-detail="0">Crisp</button></li>
+              <li><button class="menu-option" data-splat-detail="1">Normal</button></li>
+              <li><button class="menu-option" data-splat-detail="2">Smooth</button></li>
+            </ul>
+          </li>
+          <li class="menu-separator" role="separator"></li>
+          <li class="menu-submenu">
+            <button class="menu-option menu-submenu-trigger">Payloads</button>
+            <ul class="menu-dropdown menu-submenu-dropdown">
+              <li><button class="menu-option" id="menuLoadAllPayloads">Load All</button></li>
+              <li><button class="menu-option" id="menuUnloadAllPayloads">Unload All</button></li>
+            </ul>
+          </li>
         </ul>
       </div>
       <div class="menu-item">
@@ -42,6 +93,10 @@ app.innerHTML = `
         <ul class="menu-dropdown">
           <li><button class="menu-option" id="menuTutorial">Show Tutorial</button></li>
         </ul>
+      </div>
+      <div class="status-bar" id="statusBar" role="status" aria-live="polite">
+        <span class="status-spinner" id="statusSpinner" hidden></span>
+        <span class="status-label" id="statusLabel">Idle</span>
       </div>
       <input id="filePicker" type="file" multiple accept=".usd,.usda,.usdc,.usdz" style="display:none" />
       <input id="folderPicker" type="file" webkitdirectory style="display:none" />
@@ -98,6 +153,7 @@ app.innerHTML = `
           <tr><td>Scroll / Pinch</td><td>Zoom camera</td></tr>
           <tr><td>F</td><td>Frame selected prim</td></tr>
           <tr><td>Click mesh</td><td>Select prim</td></tr>
+          <tr><td>View &gt; Navigation &gt; Game Engine</td><td>Hold right mouse and use WASD + Q/E to fly; scroll while held changes speed</td></tr>
         </tbody>
         <thead><tr><th colspan="2">Scene Graph</th></tr></thead>
         <tbody>
@@ -123,6 +179,8 @@ const playBtn = app.querySelector<HTMLButtonElement>("#playBtn");
 const playbarTime = app.querySelector<HTMLElement>("#playbarTime");
 const playbarEnd = app.querySelector<HTMLElement>("#playbarEnd");
 const playbarScrubber = app.querySelector<HTMLInputElement>("#playbarScrubber");
+const statusSpinner = app.querySelector<HTMLElement>("#statusSpinner");
+const statusLabel = app.querySelector<HTMLElement>("#statusLabel");
 const sceneGraphList = app.querySelector<HTMLElement>("#sceneGraphList");
 const attrPrimPath = app.querySelector<HTMLElement>("#attrPrimPath");
 const attrList = app.querySelector<HTMLElement>("#attrList");
@@ -142,6 +200,8 @@ if (
   !playbarTime ||
   !playbarEnd ||
   !playbarScrubber ||
+  !statusSpinner ||
+  !statusLabel ||
   !sceneGraphList ||
   !attrPrimPath ||
   !attrList
@@ -154,6 +214,39 @@ const stageSummaryList = stageSummaryElement;
 
 const viewport = new ThreeViewport(viewportElement);
 const runtime = new UsdWebViewRuntime();
+type UpAxisChoice = "stage" | ViewUpAxis;
+
+const splatFidelityOptions = [
+  { label: "Base Color", maxShDegree: 0 },
+  { label: "Low SH", maxShDegree: 1 },
+  { label: "High SH", maxShDegree: 2 },
+  { label: "Full SH", maxShDegree: 3 },
+] as const;
+
+const splatDetailOptions = [
+  { label: "Crisp", scaleMultiplier: 0.8 },
+  { label: "Normal", scaleMultiplier: 1 },
+  { label: "Smooth", scaleMultiplier: 1.2 },
+] as const;
+
+let splatFidelityIndex = splatFidelityOptions.length - 1;
+let splatDetailIndex = 1;
+let navigationMode: NavigationMode = "orbital";
+let upAxisChoice: UpAxisChoice = "stage";
+let gameCameraSpeed = 2;
+let currentStageSummary: StageSummary | null = null;
+let isLoadingStage = false;
+
+function setStatus(message: string, busy = false): void {
+  statusLabel!.textContent = message;
+  statusSpinner!.hidden = !busy;
+}
+
+function waitForUiPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
 
 // --- Animation state ---
 let animStart = 0;
@@ -162,10 +255,12 @@ let animFps = 24;
 let animCurrent = 0;
 let animPlaying = false;
 let animLastTimestamp = 0;
+let animLastSampleFrame = Number.NaN;
 
 function setPlaying(playing: boolean): void {
   animPlaying = playing;
   animLastTimestamp = performance.now();
+  animLastSampleFrame = Number.NaN;
   playBtn!.innerHTML = playing ? "&#9646;&#9646;" : "&#9654;";
   playBtn!.setAttribute("aria-label", playing ? "Pause" : "Play");
 }
@@ -207,6 +302,24 @@ function hidePlaybar(): void {
   playbar!.hidden = true;
 }
 
+function sampleAnimationFrame(timeCode: number): void {
+  const hydraRenderables = runtime.extractHydraRenderablesAtTime(timeCode);
+  if (hydraRenderables.length > 0) {
+    viewport.updateRenderables(hydraRenderables, true);
+    return;
+  } else {
+    const renderables = runtime.extractRenderablesAtTime(timeCode);
+    if (renderables.length > 0) {
+      viewport.updateRenderables(renderables, true);
+    }
+  }
+
+  const transforms = runtime.extractTransformsAtTime(timeCode);
+  if (transforms.length > 0) {
+    viewport.updateTransforms(transforms);
+  }
+}
+
 function onTick(): void {
   if (!animPlaying) return;
 
@@ -220,9 +333,10 @@ function onTick(): void {
   }
 
   updatePlaybarScrubber();
-  const transforms = runtime.extractTransformsAtTime(animCurrent);
-  if (transforms.length > 0) {
-    viewport.updateTransforms(transforms);
+  const sampleFrame = Math.round(animCurrent);
+  if (sampleFrame !== animLastSampleFrame) {
+    animLastSampleFrame = sampleFrame;
+    sampleAnimationFrame(sampleFrame);
   }
 }
 
@@ -230,12 +344,10 @@ playBtn.addEventListener("click", () => setPlaying(!animPlaying));
 
 playbarScrubber.addEventListener("input", () => {
   animCurrent = Number(playbarScrubber.value);
+  animLastSampleFrame = Number.NaN;
   playbarTime.textContent = animCurrent.toFixed(1);
   if (!animPlaying) {
-    const transforms = runtime.extractTransformsAtTime(animCurrent);
-    if (transforms.length > 0) {
-      viewport.updateTransforms(transforms);
-    }
+    sampleAnimationFrame(animCurrent);
   }
 });
 
@@ -363,6 +475,7 @@ function renderAttributes(primPath: string, attrs: PrimAttribute[]): void {
 function applyVariantChange(): void {
   const renderables = runtime.extractRenderables();
   viewport.updateRenderables(renderables);
+  viewport.renderGaussianSplats(runtime.extractGaussianSplats());
   const newPrims = runtime.getSceneGraph();
   renderSceneGraph(newPrims);
   if (selectedPrimPath) {
@@ -419,15 +532,21 @@ function renderRuntimeStatus(status: RuntimeStatus): void {
     source: status.source,
     detail: status.detail,
   });
+  if (!isLoadingStage) {
+    setStatus(status.state === "ready" ? "Ready" : status.detail, status.state === "loading");
+  }
 }
 
 function renderStageSummary(summary: StageSummary | null): void {
+  const viewerUpAxis = getEffectiveUpAxis(summary?.upAxis);
   if (!summary) {
     stageSummaryList.innerHTML = renderDefinitionList({
       file: "None",
       prims: "-",
       layers: "-",
       time: "-",
+      "stage up": "-",
+      "viewer up": formatUpAxis(viewerUpAxis),
     });
     return;
   }
@@ -444,9 +563,25 @@ function renderStageSummary(summary: StageSummary | null): void {
       summary.startTimeCode !== undefined && summary.endTimeCode !== undefined
         ? `${summary.startTimeCode} - ${summary.endTimeCode}`
         : "-",
-    up: summary.upAxis ?? "-",
+    "stage up": summary.upAxis ?? "-",
+    "viewer up": formatUpAxis(viewerUpAxis),
     error: summary.error ?? "-",
   });
+}
+
+function getEffectiveUpAxis(stageUpAxis?: string | null): ViewUpAxis {
+  if (upAxisChoice !== "stage") {
+    return upAxisChoice;
+  }
+  return normalizeUpAxis(stageUpAxis);
+}
+
+function normalizeUpAxis(axis?: string | null): ViewUpAxis {
+  return axis?.toLowerCase() === "z" ? "z" : "y";
+}
+
+function formatUpAxis(axis: ViewUpAxis): string {
+  return axis === "z" ? "Z Up" : "Y Up";
 }
 
 function renderDefinitionList(values: Record<string, string>): string {
@@ -503,6 +638,90 @@ app.querySelector("#menuStats")?.addEventListener("click", () => {
   statsPanel.hidden = !statsPanel.hidden;
 });
 
+function applyNavigationOptions(): void {
+  viewport.setNavigationMode(navigationMode);
+  viewport.setGameCameraSpeed(gameCameraSpeed);
+
+  for (const button of app!.querySelectorAll<HTMLButtonElement>("[data-navigation-mode]")) {
+    button.classList.toggle("menu-option--checked", button.dataset.navigationMode === navigationMode);
+  }
+  for (const button of app!.querySelectorAll<HTMLButtonElement>("[data-camera-speed]")) {
+    button.classList.toggle("menu-option--checked", Number(button.dataset.cameraSpeed) === gameCameraSpeed);
+  }
+}
+
+function applyUpAxisOptions(): void {
+  const effectiveUpAxis = getEffectiveUpAxis(currentStageSummary?.upAxis);
+  viewport.setViewUpAxis(effectiveUpAxis);
+
+  for (const button of app!.querySelectorAll<HTMLButtonElement>("[data-up-axis]")) {
+    button.classList.toggle("menu-option--checked", button.dataset.upAxis === upAxisChoice);
+  }
+  renderStageSummary(currentStageSummary);
+}
+
+for (const button of app.querySelectorAll<HTMLButtonElement>("[data-navigation-mode]")) {
+  button.addEventListener("click", () => {
+    navigationMode = button.dataset.navigationMode as NavigationMode;
+    applyNavigationOptions();
+  });
+}
+
+for (const button of app.querySelectorAll<HTMLButtonElement>("[data-camera-speed]")) {
+  button.addEventListener("click", () => {
+    gameCameraSpeed = Number(button.dataset.cameraSpeed);
+    applyNavigationOptions();
+  });
+}
+
+viewportElement.addEventListener("camera-speed-change", (event) => {
+  gameCameraSpeed = (event as CustomEvent<{ speed: number }>).detail.speed;
+  for (const button of app!.querySelectorAll<HTMLButtonElement>("[data-camera-speed]")) {
+    button.classList.toggle("menu-option--checked", Number(button.dataset.cameraSpeed) === gameCameraSpeed);
+  }
+});
+
+for (const button of app.querySelectorAll<HTMLButtonElement>("[data-up-axis]")) {
+  button.addEventListener("click", () => {
+    upAxisChoice = button.dataset.upAxis as UpAxisChoice;
+    applyUpAxisOptions();
+  });
+}
+
+function applySplatViewOptions(): void {
+  const fidelity = splatFidelityOptions[splatFidelityIndex];
+  const detail = splatDetailOptions[splatDetailIndex];
+  viewport.setSplatViewOptions({
+    maxShDegree: fidelity.maxShDegree,
+    scaleMultiplier: detail.scaleMultiplier,
+  });
+
+  for (const button of app!.querySelectorAll<HTMLButtonElement>("[data-splat-fidelity]")) {
+    button.classList.toggle("menu-option--checked", Number(button.dataset.splatFidelity) === splatFidelityIndex);
+  }
+  for (const button of app!.querySelectorAll<HTMLButtonElement>("[data-splat-detail]")) {
+    button.classList.toggle("menu-option--checked", Number(button.dataset.splatDetail) === splatDetailIndex);
+  }
+}
+
+for (const button of app.querySelectorAll<HTMLButtonElement>("[data-splat-fidelity]")) {
+  button.addEventListener("click", () => {
+    splatFidelityIndex = Number(button.dataset.splatFidelity);
+    applySplatViewOptions();
+  });
+}
+
+for (const button of app.querySelectorAll<HTMLButtonElement>("[data-splat-detail]")) {
+  button.addEventListener("click", () => {
+    splatDetailIndex = Number(button.dataset.splatDetail);
+    applySplatViewOptions();
+  });
+}
+
+applySplatViewOptions();
+applyNavigationOptions();
+applyUpAxisOptions();
+
 app.querySelector("#menuLoadAllPayloads")?.addEventListener("click", () => {
   runtime.setAllPayloadsLoaded(true);
   applyVariantChange();
@@ -532,13 +751,14 @@ tutorialOverlay.addEventListener("click", (e) => {
 // --- Boot + file loading ---
 async function boot(): Promise<void> {
   renderRuntimeStatus(runtime.status);
+  currentStageSummary = null;
   renderStageSummary(null);
   viewport.start(onTick);
 
   const status = await runtime.load();
   renderRuntimeStatus(status);
 
-  if (status.state === "ready" && import.meta.env.DEV) {
+  if (status.state === "ready" && import.meta.env?.DEV) {
     const devFile = "/testAssets/test_variants.usda";
     const resp = await fetch(devFile);
     const buf = await resp.arrayBuffer();
@@ -547,43 +767,42 @@ async function boot(): Promise<void> {
   }
 }
 
-function hasActualAnimation(start: number, end: number): boolean {
-  const t0 = runtime.extractTransformsAtTime(start);
-  const t1 = runtime.extractTransformsAtTime(end);
-  if (t0.length !== t1.length || t0.length === 0) return false;
-  for (let i = 0; i < t0.length; i++) {
-    const m0 = t0[i].matrix;
-    const m1 = t1[i].matrix;
-    for (let j = 0; j < 16; j++) {
-      if (Math.abs(m0[j] - m1[j]) > 1e-6) return true;
-    }
-  }
-  return false;
-}
-
 async function loadFiles(files: File[]): Promise<void> {
   if (!files.length) {
     return;
   }
 
   hidePlaybar();
+  isLoadingStage = true;
+  setStatus("loading USD stage...", true);
+  await waitForUiPaint();
   clearSceneGraph();
   viewportElement!.classList.remove("has-stage");
 
   const rootFile = pickLikelyRootFile(files);
-  renderStageSummary({
+  currentStageSummary = {
     rootFile: rootFile?.webkitRelativePath || rootFile?.name || "Unknown",
-  });
+  };
+  renderStageSummary(currentStageSummary);
 
-  const result = await runtime.loadStage({
-    files,
-    rootFile,
-  });
+  let result: StageLoadResult;
+  try {
+    result = await runtime.loadStage({
+      files,
+      rootFile,
+    });
+  } catch (error) {
+    isLoadingStage = false;
+    setStatus(`Stage load failed: ${error instanceof Error ? error.message : String(error)}`, false);
+    throw error;
+  }
 
-  lastStageSummary = result.summary;
+  currentStageSummary = result.summary;
+  applyUpAxisOptions();
   renderRuntimeStatus(runtime.status);
-  renderStageSummary(result.summary);
-  viewport.renderStage(result.renderables ?? [], result.summary);
+  const gaussianSplats = result.gaussianSplats ?? [];
+  viewport.renderStage(result.renderables ?? [], result.summary, gaussianSplats.length > 0);
+  viewport.renderGaussianSplats(gaussianSplats);
   renderSceneGraph(runtime.getSceneGraph());
   viewportElement!.classList.add("has-stage");
 
@@ -591,10 +810,23 @@ async function loadFiles(files: File[]): Promise<void> {
     const s = result.summary;
     const start = s.startTimeCode ?? 0;
     const end = s.endTimeCode ?? 0;
-    if (end > start && hasActualAnimation(start, end)) {
+    if (end > start) {
       showPlaybar(s);
     }
   }
+  await waitForUiPaint();
+  if ((result.renderables?.length ?? 0) > 0) {
+    setStatus("loading materials...", true);
+    await waitForUiPaint();
+    const materializedRenderables = runtime.extractRenderablesWithMaterials();
+    if (materializedRenderables.length > 0) {
+      setStatus("decoding textures...", true);
+      await waitForUiPaint();
+      await viewport.updateRenderablesAsync(materializedRenderables);
+    }
+  }
+  isLoadingStage = false;
+  setStatus(result.summary?.error ? "Stage load failed" : "Ready", false);
 }
 
 filePicker.addEventListener("change", () => {
