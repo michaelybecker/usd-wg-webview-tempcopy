@@ -28,6 +28,7 @@ target_include_directories(usdWebViewBindingsModule PRIVATE ${USD_WEBVIEW_OPENUS
 target_link_options(usdWebViewBindingsModule PRIVATE
     --bind
     --no-entry
+    -O2
     "SHELL:-sMODULARIZE=1"
     "SHELL:-sEXPORT_ES6=1"
     "SHELL:-sEXPORT_NAME=createUsdWebViewBindingsModule"

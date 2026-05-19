@@ -1,5 +1,6 @@
 import type {
   UsdWebViewBindings,
+  HydraSyncDriver,
   PrimAttribute,
   PrimTransform,
   RenderableGaussianSplat,
@@ -16,6 +17,8 @@ const RUNTIME_ASSET_ROOT = "/usd-webview-bindings/";
 
 export class UsdWebViewRuntime {
   private bindings: UsdWebViewBindings | null = null;
+  private hydraSyncDriver: HydraSyncDriver | null = null;
+  private useHydraSyncDriver = true;
   currentStagePath: string | null = null;
 
   status: RuntimeStatus = {
@@ -89,19 +92,24 @@ export class UsdWebViewRuntime {
     const rootPath = rootFile.webkitRelativePath || rootFile.name;
     const summary = await this.bindings.openStage(rootPath);
     const normalizedSummary = normalizeStageSummary(rootPath, summary);
+    this.hydraSyncDriver?.delete?.();
+    this.hydraSyncDriver = null;
 
     if (normalizedSummary.error) {
       return { summary: normalizedSummary, renderables: [] };
     }
 
-    const renderables = this.bindings.extractRenderables?.(rootPath) ?? [];
     const gaussianSplats = this.bindings.extractGaussianSplats?.(rootPath) ?? [];
     this.currentStagePath = rootPath;
+    this.hydraSyncDriver = this.bindings.createHydraSyncDriver?.(rootPath) ?? null;
 
-    // Temporary debug: log all unique type names in the stage
-    const sg = this.bindings.getSceneGraph?.(rootPath) ?? [];
-    const types = [...new Set(sg.map(p => p.typeName || "(none)"))].sort();
-    console.log("[Debug] Stage prim count:", sg.length, "| Types:", types.join(", "));
+    // Use Hydra for initial geometry — same path as animation frames, avoids
+    // the legacy extractor which produces wrong topology for complex assets.
+    // Fall back to legacy only if Hydra gives nothing (e.g. no Hydra support).
+    let renderables = this.extractHydraRenderablesAtTime(normalizedSummary.startTimeCode ?? 0);
+    if (renderables.length === 0) {
+      renderables = this.bindings.extractRenderables?.(rootPath) ?? [];
+    }
 
     return { summary: normalizedSummary, renderables, gaussianSplats };
   }
@@ -121,10 +129,26 @@ export class UsdWebViewRuntime {
   }
 
   extractHydraRenderablesAtTime(timeCode: number): RenderableMesh[] {
+    if (this.useHydraSyncDriver && this.hydraSyncDriver) {
+      this.hydraSyncDriver.SetTime(timeCode);
+      return this.hydraSyncDriver.Draw();
+    }
     if (!this.bindings?.extractHydraRenderablesAtTime || !this.currentStagePath) {
       return [];
     }
     return this.bindings.extractHydraRenderablesAtTime(this.currentStagePath, timeCode);
+  }
+
+  getStageTiming(): { start: number; end: number; fps: number } | null {
+    if (!this.hydraSyncDriver) return null;
+    const start = this.hydraSyncDriver.GetStartTimeCode?.() ?? 0;
+    const end = this.hydraSyncDriver.GetEndTimeCode?.() ?? 0;
+    const fps = this.hydraSyncDriver.GetTimeCodesPerSecond?.() ?? 24;
+    return { start, end, fps };
+  }
+
+  setHydraSyncDriverEnabled(enabled: boolean): void {
+    this.useHydraSyncDriver = enabled;
   }
 
   getSceneGraph(): SceneGraphPrim[] {

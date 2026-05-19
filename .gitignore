@@ -3,6 +3,7 @@ public/testAssets/
 dist/
 build/
 .emscripten-cache/
+.vite/
 .DS_Store
 *.log
 .env
@@ -11,3 +12,5 @@ build/
 docs/private/
 .vscode/
 package-lock.json
+localAssets/
+public/localAssets/

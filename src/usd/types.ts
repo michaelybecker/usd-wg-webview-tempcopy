@@ -38,6 +38,14 @@ export type RenderableMesh = {
   hydraCreatedMeshRprimCount?: number;
   hydraCreatedExtComputationCount?: number;
   hydraCreatedMaterialCount?: number;
+  sceneIndexPrimType?: string;
+  sceneIndexHasSkelRoot?: boolean;
+  sceneIndexSkeletonPath?: string;
+  sceneIndexAnimationSourcePath?: string;
+  sceneIndexExtComputationPrimvarCount?: number;
+  sceneIndexHasComputedPointsPrimvar?: boolean;
+  sceneIndexComputedPointsSourcePath?: string;
+  sceneIndexComputedPointsOutputName?: string;
 };
 
 export type RenderableMaterial = {
@@ -119,6 +127,15 @@ export type PrimAttribute = {
   variantOptions?: string[]; // defined when typeName === "variantSet"
 };
 
+export type HydraSyncDriver = {
+  SetTime: (timeCode: number) => void;
+  Draw: () => RenderableMesh[];
+  GetStartTimeCode?: () => number;
+  GetEndTimeCode?: () => number;
+  GetTimeCodesPerSecond?: () => number;
+  delete?: () => void;
+};
+
 export type UsdWebViewBindings = {
   ready?: Promise<unknown>;
   createDataFile?: (path: string, data: Uint8Array) => void;
@@ -126,6 +143,7 @@ export type UsdWebViewBindings = {
   extractRenderablesWithMaterials?: (path: string) => RenderableMesh[];
   extractRenderablesAtTime?: (path: string, timeCode: number) => RenderableMesh[];
   extractHydraRenderablesAtTime?: (path: string, timeCode: number) => RenderableMesh[];
+  createHydraSyncDriver?: (path: string) => HydraSyncDriver | null;
   extractTransformsAtTime?: (path: string, timeCode: number) => PrimTransform[];
   openStage?: (path: string) => Promise<StageSummary> | StageSummary;
   inspectPrimRelationships?: (stagePath: string, primPath: string) => unknown;

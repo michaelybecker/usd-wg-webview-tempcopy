@@ -23,7 +23,6 @@ import {
   WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { PrimTransform, RenderableMesh, RenderableGaussianSplat, RenderableTexture, StageSummary } from "../usd/types";
 import { GaussianSplatRenderer, type SplatViewOptions } from "./GaussianSplatRenderer";
 
@@ -157,20 +156,7 @@ export class ThreeViewport {
     this.clearStage();
 
     for (const renderable of renderables) {
-      const rawGeometry = new BufferGeometry();
-      rawGeometry.setAttribute(
-        "position",
-        new Float32BufferAttribute(renderable.points, 3)
-      );
-      if (renderable.uvs?.length) {
-        const uvAttr = new Float32BufferAttribute(renderable.uvs, 2);
-        rawGeometry.setAttribute("uv", uvAttr);
-        rawGeometry.setAttribute("uv1", uvAttr); // required for aoMap
-      }
-      rawGeometry.setIndex(renderable.indices);
-
-      const geometry = this.buildRenderableGeometry(rawGeometry, renderable);
-      geometry.computeVertexNormals();
+      const geometry = this.buildGeometry(renderable);
 
       const mat = renderable.material;
       const [red = 0.72, green = 0.72, blue = 0.72] =
@@ -228,7 +214,6 @@ export class ThreeViewport {
 
   renderGaussianSplats(splats: RenderableGaussianSplat[]): void {
     this.splatRenderer.renderSplats(splats);
-    console.log(`[GaussianSplat] ${splats.length} splat prim(s) received`);
     if (splats.length > 0 && this.meshByPath.size === 0) {
       this.frameSplats(splats);
     }
@@ -278,15 +263,8 @@ export class ThreeViewport {
     return this.gameCameraSpeed;
   }
 
-  updateRenderables(renderables: RenderableMesh[], forceGeometry = false): void {
-    void this.updateRenderablesAsync(renderables, forceGeometry);
-  }
-
-  async updateRenderablesAsync(renderables: RenderableMesh[], forceGeometry = false): Promise<void> {
-    const textureLoads: Promise<void>[] = [];
+  updateRenderables(renderables: RenderableMesh[]): void {
     const newPaths = new Set(renderables.map(r => r.path));
-
-    // Remove prims that are no longer in the stage
     for (const [path, mesh] of [...this.meshByPath.entries()]) {
       if (!newPaths.has(path)) {
         this.stageRoot.remove(mesh);
@@ -297,88 +275,28 @@ export class ThreeViewport {
         this.highlightedMeshes.delete(mesh);
       }
     }
-
     for (const renderable of renderables) {
-      const rmat = renderable.material;
-      const [r = 0.72, g = 0.72, b = 0.72] = rmat?.diffuseColor ?? renderable.color ?? [];
       const existing = this.meshByPath.get(renderable.path);
-
       if (existing) {
         if (renderable.matrix.length === 16) {
           existing.matrix.set(...(renderable.matrix as Parameters<typeof existing.matrix.set>));
           existing.matrix.transpose();
           existing.matrixAutoUpdate = false;
         }
-
-        // Swap geometry only when the points actually changed.
-        // Compare pre-merge length + sampled values as a cheap fingerprint.
         const len = renderable.points.length;
         const fingerprint = this.geometryFingerprint(renderable.points);
-        if (
-          forceGeometry ||
-          existing.userData.ptsLen  !== len ||
-          existing.userData.ptsFingerprint !== fingerprint
-        ) {
-          const raw = new BufferGeometry();
-          raw.setAttribute("position", new Float32BufferAttribute(renderable.points, 3));
-          if (renderable.uvs?.length) {
-            const uvAttr = new Float32BufferAttribute(renderable.uvs, 2);
-            raw.setAttribute("uv", uvAttr);
-            raw.setAttribute("uv1", uvAttr);
-          }
-          raw.setIndex(renderable.indices);
-          const geometry = this.buildRenderableGeometry(raw, renderable);
-          geometry.computeVertexNormals();
-          existing.geometry.dispose();
-          existing.geometry = geometry;
-          existing.userData.ptsLen  = len;
+        if (existing.userData.ptsLen !== len || existing.userData.ptsFingerprint !== fingerprint) {
+          this.updateGeometryPositions(existing.geometry, renderable);
+          existing.userData.ptsLen = len;
           existing.userData.ptsFingerprint = fingerprint;
         }
-
-        if (rmat || renderable.color) {
-          // Material scalars are cheap to update unconditionally when present.
-          const material = existing.material as MeshPhysicalMaterial;
-          material.color.setRGB(r, g, b);
-          material.metalness = rmat?.metallicTexture ? 1.0 : (rmat?.metallic ?? 0.05);
-          material.roughness = rmat?.roughnessTexture ? 1.0 : (rmat?.roughness ?? 0.55);
-          material.opacity   = rmat?.opacity ?? 1;
-          material.transparent = (rmat?.opacity ?? 1) < 1;
-          material.clearcoat          = rmat?.clearcoat ?? 0;
-          material.clearcoatRoughness = rmat?.clearcoatRoughness ?? 0;
-          material.ior = rmat?.ior ?? 1.5;
-          if (rmat?.emissiveColor) {
-            const [er = 0, eg = 0, eb = 0] = rmat.emissiveColor;
-            material.emissive.setRGB(er, eg, eb);
-          }
-          textureLoads.push(this.applyTexture(material, "map",                    rmat?.diffuseTexture,            true));
-          textureLoads.push(this.applyTexture(material, "roughnessMap",           rmat?.roughnessTexture,          false));
-          textureLoads.push(this.applyTexture(material, "metalnessMap",           rmat?.metallicTexture,           false));
-          textureLoads.push(this.applyTexture(material, "normalMap",              rmat?.normalTexture,             false));
-          textureLoads.push(this.applyTexture(material, "aoMap",                  rmat?.occlusionTexture,          false));
-          textureLoads.push(this.applyTexture(material, "emissiveMap",            rmat?.emissiveTexture,           true));
-          textureLoads.push(this.applyTexture(material, "clearcoatMap",           rmat?.clearcoatTexture,          false));
-          textureLoads.push(this.applyTexture(material, "clearcoatRoughnessMap",  rmat?.clearcoatRoughnessTexture, false));
-          textureLoads.push(this.applyTexture(material, "alphaMap",               rmat?.opacityTexture,            false));
-          material.needsUpdate = true;
-        }
-
-        // Re-apply highlight if this prim was selected
         if (this.highlightedMeshes.has(existing)) {
           this.applyHighlight(existing);
         }
       } else {
-        // New prim — full construction, same as renderStage
-        const raw = new BufferGeometry();
-        raw.setAttribute("position", new Float32BufferAttribute(renderable.points, 3));
-        if (renderable.uvs?.length) {
-          const uvAttr = new Float32BufferAttribute(renderable.uvs, 2);
-          raw.setAttribute("uv", uvAttr);
-          raw.setAttribute("uv1", uvAttr);
-        }
-        raw.setIndex(renderable.indices);
-        const geometry = this.buildRenderableGeometry(raw, renderable);
-        geometry.computeVertexNormals();
-
+        const [r = 0.72, g = 0.72, b = 0.72] = renderable.material?.diffuseColor ?? renderable.color ?? [];
+        const rmat = renderable.material;
+        const geometry = this.buildGeometry(renderable);
         const material = new MeshPhysicalMaterial({
           color: new Color(r, g, b),
           metalness: rmat?.metallicTexture ? 1.0 : (rmat?.metallic ?? 0.05),
@@ -390,23 +308,9 @@ export class ThreeViewport {
           ior: rmat?.ior ?? 1.5,
           side: DoubleSide,
         });
-        if (rmat?.emissiveColor) {
-          const [er = 0, eg = 0, eb = 0] = rmat.emissiveColor;
-          material.emissive = new Color(er, eg, eb);
-        }
-        textureLoads.push(this.applyTexture(material, "map",                    rmat?.diffuseTexture,            true));
-        textureLoads.push(this.applyTexture(material, "roughnessMap",           rmat?.roughnessTexture,          false));
-        textureLoads.push(this.applyTexture(material, "metalnessMap",           rmat?.metallicTexture,           false));
-        textureLoads.push(this.applyTexture(material, "normalMap",              rmat?.normalTexture,             false));
-        textureLoads.push(this.applyTexture(material, "aoMap",                  rmat?.occlusionTexture,          false));
-        textureLoads.push(this.applyTexture(material, "emissiveMap",            rmat?.emissiveTexture,           true));
-        textureLoads.push(this.applyTexture(material, "clearcoatMap",           rmat?.clearcoatTexture,          false));
-        textureLoads.push(this.applyTexture(material, "clearcoatRoughnessMap",  rmat?.clearcoatRoughnessTexture, false));
-        textureLoads.push(this.applyTexture(material, "alphaMap",               rmat?.opacityTexture,            false));
-
         const mesh = new Mesh(geometry, material);
         mesh.name = renderable.name || renderable.path;
-        mesh.userData.ptsLen  = renderable.points.length;
+        mesh.userData.ptsLen = renderable.points.length;
         mesh.userData.ptsFingerprint = this.geometryFingerprint(renderable.points);
         this.meshByPath.set(renderable.path, mesh);
         this.pathByMesh.set(mesh, renderable.path);
@@ -418,7 +322,53 @@ export class ThreeViewport {
         this.stageRoot.add(mesh);
       }
     }
-    // No frameStage() — camera position is intentionally preserved
+  }
+
+  // Materials-only pass: called once after initial load to apply PBR materials
+  // and textures onto geometry that was already built by renderStage/Hydra.
+  // Never removes or rebuilds geometry — Hydra owns the geometry.
+  async updateRenderablesAsync(renderables: RenderableMesh[]): Promise<void> {
+    const textureLoads: Promise<void>[] = [];
+    for (const renderable of renderables) {
+      const rmat = renderable.material;
+      if (!rmat && !renderable.color) continue;
+      const existing = this.meshByPath.get(renderable.path);
+      if (!existing) continue;
+
+      // Hydra skips UV extraction for skinned meshes — inject from legacy data.
+      if (!existing.geometry.attributes.uv && renderable.uvs?.length) {
+        const faceUvs = this.faceExpandAttr(renderable.uvs as number[], renderable.indices as number[], 2);
+        if (existing.geometry.attributes.position?.count === faceUvs.length / 2) {
+          const uvAttr = new Float32BufferAttribute(faceUvs, 2);
+          existing.geometry.setAttribute("uv", uvAttr);
+          existing.geometry.setAttribute("uv1", uvAttr.clone());
+        }
+      }
+      const [r = 0.72, g = 0.72, b = 0.72] = rmat?.diffuseColor ?? renderable.color ?? [];
+      const material = existing.material as MeshPhysicalMaterial;
+      material.color.setRGB(r, g, b);
+      material.metalness = rmat?.metallicTexture ? 1.0 : (rmat?.metallic ?? 0.05);
+      material.roughness = rmat?.roughnessTexture ? 1.0 : (rmat?.roughness ?? 0.55);
+      material.opacity   = rmat?.opacity ?? 1;
+      material.transparent = (rmat?.opacity ?? 1) < 1;
+      material.clearcoat          = rmat?.clearcoat ?? 0;
+      material.clearcoatRoughness = rmat?.clearcoatRoughness ?? 0;
+      material.ior = rmat?.ior ?? 1.5;
+      if (rmat?.emissiveColor) {
+        const [er = 0, eg = 0, eb = 0] = rmat.emissiveColor;
+        material.emissive.setRGB(er, eg, eb);
+      }
+      textureLoads.push(this.applyTexture(material, "map",                    rmat?.diffuseTexture,            true));
+      textureLoads.push(this.applyTexture(material, "roughnessMap",           rmat?.roughnessTexture,          false));
+      textureLoads.push(this.applyTexture(material, "metalnessMap",           rmat?.metallicTexture,           false));
+      textureLoads.push(this.applyTexture(material, "normalMap",              rmat?.normalTexture,             false));
+      textureLoads.push(this.applyTexture(material, "aoMap",                  rmat?.occlusionTexture,          false));
+      textureLoads.push(this.applyTexture(material, "emissiveMap",            rmat?.emissiveTexture,           true));
+      textureLoads.push(this.applyTexture(material, "clearcoatMap",           rmat?.clearcoatTexture,          false));
+      textureLoads.push(this.applyTexture(material, "clearcoatRoughnessMap",  rmat?.clearcoatRoughnessTexture, false));
+      textureLoads.push(this.applyTexture(material, "alphaMap",               rmat?.opacityTexture,            false));
+      material.needsUpdate = true;
+    }
     await Promise.all(textureLoads);
   }
 
@@ -431,17 +381,55 @@ export class ThreeViewport {
     }
   }
 
-  private buildRenderableGeometry(raw: BufferGeometry, renderable: RenderableMesh): BufferGeometry {
-    if (renderable.usedComputedPoints) {
-      return raw;
+  // Update only vertex positions on an existing geometry — reference pattern for
+  // animation frames. Preserves UVs, normals re-computed after update.
+  // Falls back to full rebuild only when vertex count changes (topology shift).
+  private updateGeometryPositions(geo: BufferGeometry, renderable: RenderableMesh): void {
+    const pos = this.faceExpandAttr(renderable.points as number[], renderable.indices as number[], 3);
+    const posAttr = geo.attributes.position;
+    if (posAttr && posAttr.count * 3 === pos.length) {
+      // Same vertex count — update in place, keep UVs untouched
+      (posAttr.array as Float32Array).set(pos);
+      posAttr.needsUpdate = true;
+      geo.computeVertexNormals();
+    } else {
+      // Topology changed — full rebuild, but salvage UVs from the old geometry
+      const savedUv = geo.attributes.uv;
+      const savedUv1 = geo.attributes.uv1;
+      geo.dispose();
+      const newGeo = this.buildGeometry(renderable);
+      // Copy attributes into the existing geometry object so the Mesh reference stays valid
+      for (const key of Object.keys(newGeo.attributes)) {
+        geo.setAttribute(key, newGeo.attributes[key]);
+      }
+      geo.index = newGeo.index;
+      if (!geo.attributes.uv && savedUv) geo.setAttribute("uv", savedUv);
+      if (!geo.attributes.uv1 && savedUv1) geo.setAttribute("uv1", savedUv1);
     }
+  }
 
-    // Static extracted meshes arrive face-expanded, so welding gives smoother
-    // normals. Skinned Hydra fallback points should stay in the exact order
-    // native code produced for this frame.
-    const geometry = mergeVertices(raw);
-    raw.dispose();
-    return geometry;
+  // Face-expand: for each index, copy `stride` floats from `data`. Matches the
+  // reference ThreeJsRenderDelegate.updateOrder() pattern — no setIndex() needed.
+  private faceExpandAttr(data: number[], indices: number[], stride: number): Float32Array {
+    const out = new Float32Array(indices.length * stride);
+    for (let i = 0; i < indices.length; i++) {
+      const s = indices[i] * stride;
+      for (let j = 0; j < stride; j++) out[i * stride + j] = data[s + j];
+    }
+    return out;
+  }
+
+  private buildGeometry(renderable: RenderableMesh): BufferGeometry {
+    const { points, indices, uvs } = renderable;
+    const geo = new BufferGeometry();
+    geo.setAttribute("position", new Float32BufferAttribute(this.faceExpandAttr(points, indices, 3), 3));
+    if (uvs?.length) {
+      const uvAttr = new Float32BufferAttribute(this.faceExpandAttr(uvs, indices, 2), 2);
+      geo.setAttribute("uv", uvAttr);
+      geo.setAttribute("uv1", uvAttr.clone());
+    }
+    geo.computeVertexNormals();
+    return geo;
   }
 
   private geometryFingerprint(points: number[]): string {

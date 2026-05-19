@@ -75,16 +75,10 @@ export class GaussianSplatRenderer {
   }
 
   private _buildMesh(splat: RenderableGaussianSplat): SplatMesh {
-    const { count, positions, scales, orientations, opacities, shCoeffs, shDegree } = splat;
+    const { count, positions, scales, orientations, opacities, shCoeffs } = splat;
     const shStride = getSphericalHarmonicsStride(splat);
     const shDegreeForSpark = getSparkSphericalHarmonicsDegree(splat, shStride);
     const shExtra = createSphericalHarmonicsExtra(splat, shDegreeForSpark);
-
-    console.log(
-      `[GaussianSplat] ${splat.path}: count=${count}, shDegree=${shDegree ?? "unknown"}, shStride=${shStride}, sparkSh=${shDegreeForSpark}, ` +
-        `positions=${positions.length / 3}, scales=${scales.length / 3}, orientations=${orientations.length / 4}, ` +
-        `opacities=${opacities.length}`
-    );
 
     const packedSplats = new PackedSplats({
       maxSplats: count,

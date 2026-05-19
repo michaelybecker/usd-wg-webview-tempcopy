@@ -214,6 +214,9 @@ const stageSummaryList = stageSummaryElement;
 
 const viewport = new ThreeViewport(viewportElement);
 const runtime = new UsdWebViewRuntime();
+runtime.setHydraSyncDriverEnabled(
+  localStorage.getItem("usdWebView.hydraSyncDriver") !== "0"
+);
 type UpAxisChoice = "stage" | ViewUpAxis;
 
 const splatFidelityOptions = [
@@ -255,12 +258,10 @@ let animFps = 24;
 let animCurrent = 0;
 let animPlaying = false;
 let animLastTimestamp = 0;
-let animLastSampleFrame = Number.NaN;
 
 function setPlaying(playing: boolean): void {
   animPlaying = playing;
   animLastTimestamp = performance.now();
-  animLastSampleFrame = Number.NaN;
   playBtn!.innerHTML = playing ? "&#9646;&#9646;" : "&#9654;";
   playBtn!.setAttribute("aria-label", playing ? "Pause" : "Play");
 }
@@ -303,48 +304,26 @@ function hidePlaybar(): void {
 }
 
 function sampleAnimationFrame(timeCode: number): void {
-  const hydraRenderables = runtime.extractHydraRenderablesAtTime(timeCode);
-  if (hydraRenderables.length > 0) {
-    viewport.updateRenderables(hydraRenderables, true);
-    return;
-  } else {
-    const renderables = runtime.extractRenderablesAtTime(timeCode);
-    if (renderables.length > 0) {
-      viewport.updateRenderables(renderables, true);
-    }
-  }
-
-  const transforms = runtime.extractTransformsAtTime(timeCode);
-  if (transforms.length > 0) {
-    viewport.updateTransforms(transforms);
+  const renderables = runtime.extractHydraRenderablesAtTime(timeCode);
+  if (renderables.length > 0) {
+    viewport.updateRenderables(renderables);
   }
 }
 
 function onTick(): void {
   if (!animPlaying) return;
-
   const now = performance.now();
-  const elapsed = now - animLastTimestamp;
+  animCurrent += ((now - animLastTimestamp) / 1000) * animFps;
   animLastTimestamp = now;
-
-  animCurrent += (elapsed / 1000) * animFps;
-  if (animCurrent >= animEnd) {
-    animCurrent = animStart;
-  }
-
+  if (animCurrent >= animEnd) animCurrent = animStart;
   updatePlaybarScrubber();
-  const sampleFrame = Math.round(animCurrent);
-  if (sampleFrame !== animLastSampleFrame) {
-    animLastSampleFrame = sampleFrame;
-    sampleAnimationFrame(sampleFrame);
-  }
+  sampleAnimationFrame(animCurrent);
 }
 
 playBtn.addEventListener("click", () => setPlaying(!animPlaying));
 
 playbarScrubber.addEventListener("input", () => {
   animCurrent = Number(playbarScrubber.value);
-  animLastSampleFrame = Number.NaN;
   playbarTime.textContent = animCurrent.toFixed(1);
   if (!animPlaying) {
     sampleAnimationFrame(animCurrent);
@@ -812,6 +791,17 @@ async function loadFiles(files: File[]): Promise<void> {
     const end = s.endTimeCode ?? 0;
     if (end > start) {
       showPlaybar(s);
+      // Override with authoritative driver timing if available
+      const driverTiming = runtime.getStageTiming();
+      if (driverTiming && driverTiming.end > driverTiming.start) {
+        animStart = driverTiming.start;
+        animEnd = driverTiming.end;
+        animFps = driverTiming.fps;
+        animCurrent = animStart;
+        playbarScrubber!.min = String(animStart);
+        playbarScrubber!.max = String(animEnd);
+        updatePlaybarScrubber();
+      }
     }
   }
   await waitForUiPaint();
