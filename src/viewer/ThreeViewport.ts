@@ -268,7 +268,7 @@ export class ThreeViewport {
           } else {
             geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
           }
-          this.recomputeGeometryNormals(geometry);
+          this.setExpandedVertexNormals(geometry, points, indices);
           geometry.computeBoundingSphere();
         };
 
@@ -467,7 +467,7 @@ export class ThreeViewport {
   }
 
   // Update only vertex positions on an existing geometry for animation frames.
-  // Preserves UVs, normals re-computed after update.
+  // Preserves UVs, normals re-computed from the original indexed topology.
   // Falls back to full rebuild only when vertex count changes (topology shift).
   private updateGeometryPositions(geo: BufferGeometry, renderable: RenderableMesh): void {
     const pos = this.faceExpandAttr(renderable.points as number[], renderable.indices as number[], 3);
@@ -476,7 +476,7 @@ export class ThreeViewport {
       // Same vertex count — update in place, keep UVs untouched
       (posAttr.array as Float32Array).set(pos);
       posAttr.needsUpdate = true;
-      this.recomputeGeometryNormals(geo);
+      this.setExpandedVertexNormals(geo, renderable.points, renderable.indices);
     } else {
       // Topology changed — full rebuild, but salvage UVs from the old geometry
       const savedUv = geo.attributes.uv;
@@ -517,13 +517,63 @@ export class ThreeViewport {
       geo.setAttribute("uv", uvAttr);
       geo.setAttribute("uv1", uvAttr.clone());
     }
-    this.recomputeGeometryNormals(geo);
+    this.setExpandedVertexNormals(geo, points, indices);
     return geo;
   }
 
-  private recomputeGeometryNormals(geo: BufferGeometry): void {
-    geo.deleteAttribute("normal");
-    geo.computeVertexNormals();
+  private setExpandedVertexNormals(
+    geo: BufferGeometry,
+    points: ArrayLike<number>,
+    indices: ArrayLike<number>
+  ): void {
+    const vertexNormals = new Float32Array(points.length);
+
+    for (let i = 0; i + 2 < indices.length; i += 3) {
+      const ia = indices[i] * 3;
+      const ib = indices[i + 1] * 3;
+      const ic = indices[i + 2] * 3;
+      if (ic + 2 >= points.length) continue;
+
+      const ax = points[ia];
+      const ay = points[ia + 1];
+      const az = points[ia + 2];
+      const abx = points[ib] - ax;
+      const aby = points[ib + 1] - ay;
+      const abz = points[ib + 2] - az;
+      const acx = points[ic] - ax;
+      const acy = points[ic + 1] - ay;
+      const acz = points[ic + 2] - az;
+
+      const nx = aby * acz - abz * acy;
+      const ny = abz * acx - abx * acz;
+      const nz = abx * acy - aby * acx;
+
+      vertexNormals[ia] += nx;
+      vertexNormals[ia + 1] += ny;
+      vertexNormals[ia + 2] += nz;
+      vertexNormals[ib] += nx;
+      vertexNormals[ib + 1] += ny;
+      vertexNormals[ib + 2] += nz;
+      vertexNormals[ic] += nx;
+      vertexNormals[ic + 1] += ny;
+      vertexNormals[ic + 2] += nz;
+    }
+
+    for (let i = 0; i + 2 < vertexNormals.length; i += 3) {
+      const nx = vertexNormals[i];
+      const ny = vertexNormals[i + 1];
+      const nz = vertexNormals[i + 2];
+      const length = Math.hypot(nx, ny, nz);
+      if (length > 0) {
+        vertexNormals[i] = nx / length;
+        vertexNormals[i + 1] = ny / length;
+        vertexNormals[i + 2] = nz / length;
+      } else {
+        vertexNormals[i + 2] = 1;
+      }
+    }
+
+    geo.setAttribute("normal", new Float32BufferAttribute(this.faceExpandAttr(vertexNormals, indices, 3), 3));
     geo.attributes.normal.needsUpdate = true;
   }
 
