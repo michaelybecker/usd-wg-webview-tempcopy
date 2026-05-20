@@ -32,6 +32,7 @@ export type RenderableMesh = {
   matrix: number[];
   color?: number[];
   material?: RenderableMaterial;
+  materialSubsets?: RenderableMaterialSubset[];
   pointComputationCount?: number;
   usedComputedPoints?: boolean;
   usdSkelFallbackAvailable?: boolean;
@@ -46,6 +47,14 @@ export type RenderableMesh = {
   sceneIndexHasComputedPointsPrimvar?: boolean;
   sceneIndexComputedPointsSourcePath?: string;
   sceneIndexComputedPointsOutputName?: string;
+};
+
+export type RenderableMaterialSubset = {
+  path: string;
+  name: string;
+  start: number;
+  count: number;
+  material?: RenderableMaterial;
 };
 
 export type RenderableMaterial = {
@@ -82,6 +91,7 @@ export type StageLoadRequest = {
   files: File[];
   rootFile?: File;
   referenceHydraRenderInterface?: unknown;
+  loadAllPayloads?: boolean;
 };
 
 export type RenderableGaussianSplat = {
@@ -154,10 +164,12 @@ export type UsdWebViewBindings = {
   extractRenderablesWithMaterials?: (path: string) => RenderableMesh[];
   extractRenderablesAtTime?: (path: string, timeCode: number) => RenderableMesh[];
   extractHydraRenderablesAtTime?: (path: string, timeCode: number) => RenderableMesh[];
+  extractHydraRenderableSnapshotAtTime?: (path: string, timeCode: number) => RenderableMesh[] | null;
+  extractHydraRenderableSubtreeAtTime?: (path: string, primPath: string, timeCode: number) => RenderableMesh[] | null;
   createHydraSyncDriver?: (path: string) => HydraSyncDriver | null;
   createReferenceHydraDriver?: (path: string, renderInterface: unknown) => ReferenceHydraDriver | null;
   extractTransformsAtTime?: (path: string, timeCode: number) => PrimTransform[];
-  openStage?: (path: string) => Promise<StageSummary> | StageSummary;
+  openStage?: (path: string, loadAllPayloads?: boolean) => Promise<StageSummary> | StageSummary;
   inspectPrimRelationships?: (stagePath: string, primPath: string) => unknown;
   getSceneGraph?: (stagePath: string) => SceneGraphPrim[];
   getPrimAttributes?: (stagePath: string, primPath: string) => PrimAttribute[];

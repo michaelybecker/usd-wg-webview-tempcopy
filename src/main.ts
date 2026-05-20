@@ -29,7 +29,7 @@ app.innerHTML = `
         </ul>
       </div>
       <div class="menu-item">
-        <button class="menu-btn">View</button>
+        <button class="menu-btn">Settings</button>
         <ul class="menu-dropdown">
           <li><button class="menu-option" id="menuStats">Stats</button></li>
           <li class="menu-separator" role="separator"></li>
@@ -84,6 +84,14 @@ app.innerHTML = `
             <ul class="menu-dropdown menu-submenu-dropdown">
               <li><button class="menu-option" id="menuLoadAllPayloads">Load All</button></li>
               <li><button class="menu-option" id="menuUnloadAllPayloads">Unload All</button></li>
+              <li class="menu-separator" role="separator"></li>
+              <li class="menu-submenu">
+                <button class="menu-option menu-submenu-trigger">Load all payloads on Stage Open</button>
+                <ul class="menu-dropdown menu-submenu-dropdown">
+                  <li><button class="menu-option" data-load-payloads-on-open="true">True</button></li>
+                  <li><button class="menu-option" data-load-payloads-on-open="false">False</button></li>
+                </ul>
+              </li>
             </ul>
           </li>
         </ul>
@@ -153,7 +161,7 @@ app.innerHTML = `
           <tr><td>Scroll / Pinch</td><td>Zoom camera</td></tr>
           <tr><td>F</td><td>Frame selected prim</td></tr>
           <tr><td>Click mesh</td><td>Select prim</td></tr>
-          <tr><td>View &gt; Navigation &gt; Game Engine</td><td>Hold right mouse and use WASD + Q/E to fly; scroll while held changes speed</td></tr>
+          <tr><td>Settings &gt; Navigation &gt; Game Engine</td><td>Hold right mouse and use WASD + Q/E to fly; scroll while held changes speed</td></tr>
         </tbody>
         <thead><tr><th colspan="2">Scene Graph</th></tr></thead>
         <tbody>
@@ -162,7 +170,7 @@ app.innerHTML = `
           <tr><td><span class="sg-badge sg-badge--variant" style="pointer-events:none">V</span> badge</td><td>Prim has USD variant sets — click to cycle, dropdown to pick</td></tr>
           <tr><td><span class="sg-badge sg-badge--payload sg-badge--payload-loaded" style="pointer-events:none">P</span> badge (amber)</td><td>Payload loaded — click to unload; prim stays in tree but dims</td></tr>
           <tr><td><span class="sg-badge sg-badge--payload" style="pointer-events:none">P</span> badge (grey)</td><td>Payload unloaded — click to reload geometry and materials</td></tr>
-          <tr><td>View &gt; Load / Unload All Payloads</td><td>Bulk-toggle every payload in the stage at once</td></tr>
+          <tr><td>Settings &gt; Payloads</td><td>Bulk-toggle payloads and choose the stage-open payload policy</td></tr>
         </tbody>
       </table>
     </div>
@@ -237,8 +245,15 @@ let splatDetailIndex = 1;
 let navigationMode: NavigationMode = "orbital";
 let upAxisChoice: UpAxisChoice = "stage";
 let gameCameraSpeed = 2;
+const loadAllPayloadsOnStageOpenStorageKey = "usdWebView.loadAllPayloadsOnStageOpen";
+if (localStorage.getItem(loadAllPayloadsOnStageOpenStorageKey) === null) {
+  localStorage.setItem(loadAllPayloadsOnStageOpenStorageKey, "true");
+}
+let loadAllPayloadsOnStageOpen =
+  localStorage.getItem(loadAllPayloadsOnStageOpenStorageKey) !== "false";
 let currentStageSummary: StageSummary | null = null;
 let isLoadingStage = false;
+let variantChangeSerial = 0;
 
 function setStatus(message: string, busy = false): void {
   statusLabel!.textContent = message;
@@ -451,10 +466,54 @@ function renderAttributes(primPath: string, attrs: PrimAttribute[]): void {
     : '<p class="sg-empty">No attributes</p>';
 }
 
-function applyVariantChange(): void {
-  const renderables = runtime.extractRenderables();
-  viewport.updateRenderables(renderables);
-  viewport.renderGaussianSplats(runtime.extractGaussianSplats());
+async function applyVariantChange(
+  primPath?: string,
+  variantSetName?: string,
+  loadingMessage = "loading variant..."
+): Promise<void> {
+  const serial = ++variantChangeSerial;
+  const normalizedVariantSet = variantSetName?.toLowerCase() ?? "";
+  const isMaterialVariant =
+    normalizedVariantSet.includes("shading") ||
+    normalizedVariantSet.includes("material");
+  const isAnimationVariant = normalizedVariantSet.includes("animation");
+
+  setStatus(loadingMessage, true);
+  await waitForUiPaint();
+
+  if (!isMaterialVariant) {
+    const subtreeRenderables = primPath && !isAnimationVariant
+      ? runtime.extractHydraRenderableSubtreeAtTime(primPath, animCurrent)
+      : null;
+    if (primPath && !isAnimationVariant && subtreeRenderables) {
+      viewport.updateRenderablesUnderRoot(
+        primPath,
+        subtreeRenderables,
+        false
+      );
+    } else {
+      let renderables = runtime.extractHydraRenderableSnapshotAtTime(animCurrent);
+      if (!renderables || renderables.length === 0) {
+        renderables = runtime.extractRenderables();
+      }
+      if (isAnimationVariant) {
+        viewport.renderStage(renderables, currentStageSummary, false);
+      } else {
+        viewport.updateRenderables(renderables);
+      }
+    }
+    viewport.renderGaussianSplats(runtime.extractGaussianSplats());
+  }
+
+  const materializedRenderables = runtime.extractRenderablesWithMaterials();
+  if (materializedRenderables.length > 0) {
+    await viewport.updateRenderablesAsync(materializedRenderables);
+  }
+
+  if (serial !== variantChangeSerial) {
+    return;
+  }
+
   const newPrims = runtime.getSceneGraph();
   renderSceneGraph(newPrims);
   if (selectedPrimPath) {
@@ -467,13 +526,22 @@ function applyVariantChange(): void {
       attrPrimPath!.textContent = "";
     }
   }
+  setStatus("Ready", false);
 }
 
 attrList!.addEventListener("change", (e) => {
   const select = (e.target as Element).closest<HTMLSelectElement>(".attr-variant-select");
   if (!select) return;
-  runtime.setVariantSelection(select.dataset.primpath!, select.dataset.variantset!, select.value);
-  applyVariantChange();
+  const changed = runtime.setVariantSelection(select.dataset.primpath!, select.dataset.variantset!, select.value);
+  if (!changed) {
+    renderAttributes(select.dataset.primpath!, runtime.getPrimAttributes(select.dataset.primpath!));
+    return;
+  }
+  const normalizedVariantSet = select.dataset.variantset?.toLowerCase() ?? "";
+  if (!normalizedVariantSet.includes("shading") && !normalizedVariantSet.includes("material")) {
+    runtime.resetHydraDrivers();
+  }
+  void applyVariantChange(select.dataset.primpath, select.dataset.variantset);
 });
 
 sceneGraphList!.addEventListener("click", (e) => {
@@ -495,7 +563,11 @@ sceneGraphList!.addEventListener("click", (e) => {
     const path = payloadBtn.dataset.payloadPath;
     const currentlyLoaded = payloadBtn.dataset.payloadLoaded === "1";
     runtime.setPayloadLoaded(path, !currentlyLoaded);
-    applyVariantChange();
+    void applyVariantChange(
+      path,
+      undefined,
+      currentlyLoaded ? "unloading payload..." : "loading payload..."
+    );
     return;
   }
 
@@ -683,6 +755,19 @@ function applySplatViewOptions(): void {
   }
 }
 
+function applyPayloadOpenOptions(): void {
+  localStorage.setItem(
+    loadAllPayloadsOnStageOpenStorageKey,
+    String(loadAllPayloadsOnStageOpen)
+  );
+  for (const button of app!.querySelectorAll<HTMLButtonElement>("[data-load-payloads-on-open]")) {
+    button.classList.toggle(
+      "menu-option--checked",
+      button.dataset.loadPayloadsOnOpen === String(loadAllPayloadsOnStageOpen)
+    );
+  }
+}
+
 for (const button of app.querySelectorAll<HTMLButtonElement>("[data-splat-fidelity]")) {
   button.addEventListener("click", () => {
     splatFidelityIndex = Number(button.dataset.splatFidelity);
@@ -697,18 +782,26 @@ for (const button of app.querySelectorAll<HTMLButtonElement>("[data-splat-detail
   });
 }
 
+for (const button of app.querySelectorAll<HTMLButtonElement>("[data-load-payloads-on-open]")) {
+  button.addEventListener("click", () => {
+    loadAllPayloadsOnStageOpen = button.dataset.loadPayloadsOnOpen === "true";
+    applyPayloadOpenOptions();
+  });
+}
+
 applySplatViewOptions();
 applyNavigationOptions();
 applyUpAxisOptions();
+applyPayloadOpenOptions();
 
 app.querySelector("#menuLoadAllPayloads")?.addEventListener("click", () => {
   runtime.setAllPayloadsLoaded(true);
-  applyVariantChange();
+  void applyVariantChange(undefined, undefined, "loading payloads...");
 });
 
 app.querySelector("#menuUnloadAllPayloads")?.addEventListener("click", () => {
   runtime.setAllPayloadsLoaded(false);
-  applyVariantChange();
+  void applyVariantChange(undefined, undefined, "unloading payloads...");
 });
 
 statsClose.addEventListener("click", () => {
@@ -764,6 +857,7 @@ async function loadFiles(files: File[]): Promise<void> {
       files,
       rootFile,
       referenceHydraRenderInterface,
+      loadAllPayloads: loadAllPayloadsOnStageOpen,
     });
   } catch (error) {
     isLoadingStage = false;

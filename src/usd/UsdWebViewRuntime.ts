@@ -92,7 +92,7 @@ export class UsdWebViewRuntime {
     }
 
     const rootPath = rootFile.webkitRelativePath || rootFile.name;
-    const summary = await this.bindings.openStage(rootPath);
+    const summary = await this.bindings.openStage(rootPath, request.loadAllPayloads ?? true);
     const normalizedSummary = normalizeStageSummary(rootPath, summary);
     this.referenceHydraDriver?.delete?.();
     this.referenceHydraDriver = null;
@@ -114,7 +114,6 @@ export class UsdWebViewRuntime {
       request.referenceHydraRenderInterface &&
       this.bindings.createReferenceHydraDriver
     ) {
-      console.info("[USD WebView] attempting reference hydra load path");
       this.referenceHydraDriver = this.bindings.createReferenceHydraDriver(
         rootPath,
         request.referenceHydraRenderInterface
@@ -122,7 +121,6 @@ export class UsdWebViewRuntime {
       if (this.referenceHydraDriver) {
         this.referenceHydraDriver.SetTime(startTime);
         this.referenceHydraDriver.Draw();
-        console.info("[USD WebView] using reference hydra load path");
         return {
           summary: normalizedSummary,
           renderables: [],
@@ -176,6 +174,20 @@ export class UsdWebViewRuntime {
     return this.bindings.extractHydraRenderablesAtTime(this.currentStagePath, timeCode);
   }
 
+  extractHydraRenderableSnapshotAtTime(timeCode: number): RenderableMesh[] | null {
+    if (!this.bindings?.extractHydraRenderableSnapshotAtTime || !this.currentStagePath) {
+      return null;
+    }
+    return this.bindings.extractHydraRenderableSnapshotAtTime(this.currentStagePath, timeCode);
+  }
+
+  extractHydraRenderableSubtreeAtTime(primPath: string, timeCode: number): RenderableMesh[] | null {
+    if (!this.bindings?.extractHydraRenderableSubtreeAtTime || !this.currentStagePath) {
+      return null;
+    }
+    return this.bindings.extractHydraRenderableSubtreeAtTime(this.currentStagePath, primPath, timeCode);
+  }
+
   getStageTiming(): { start: number; end: number; fps: number } | null {
     if (this.referenceHydraDriver) {
       const start = this.referenceHydraDriver.GetStartTimeCode?.() ?? 0;
@@ -192,6 +204,16 @@ export class UsdWebViewRuntime {
 
   setHydraSyncDriverEnabled(enabled: boolean): void {
     this.useHydraSyncDriver = enabled;
+  }
+
+  resetHydraDrivers(): void {
+    this.referenceHydraDriver?.delete?.();
+    this.referenceHydraDriver = null;
+    this.hydraSyncDriver?.delete?.();
+    this.hydraSyncDriver = null;
+    if (this.currentStagePath) {
+      this.hydraSyncDriver = this.bindings?.createHydraSyncDriver?.(this.currentStagePath) ?? null;
+    }
   }
 
   getSceneGraph(): SceneGraphPrim[] {

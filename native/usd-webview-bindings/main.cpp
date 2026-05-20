@@ -4,6 +4,7 @@
 #include "pxr/base/tf/fileUtils.h"
 #include "pxr/base/tf/pathUtils.h"
 #include "pxr/base/tf/stringUtils.h"
+#include "pxr/base/tf/type.h"
 #include "pxr/base/vt/array.h"
 #include "pxr/base/gf/half.h"
 #include "pxr/base/gf/interval.h"
@@ -67,6 +68,7 @@
 #include "pxr/usd/usdGeom/mesh.h"
 #include "pxr/usd/usdGeom/primvar.h"
 #include "pxr/usd/usdGeom/primvarsAPI.h"
+#include "pxr/usd/usdGeom/subset.h"
 #include "pxr/usd/usdGeom/tokens.h"
 #include "pxr/usd/usdGeom/xformCache.h"
 #include "pxr/usd/usdShade/connectableAPI.h"
@@ -123,6 +125,15 @@ struct MeshPayload
     std::vector<float> points;
     std::vector<int> triangleIndices;
     std::vector<float> uvs;
+    std::vector<int> faceIndexStarts;
+    std::vector<int> faceIndexCounts;
+};
+
+struct MaterialSubsetGroup
+{
+    UsdPrim prim;
+    int start = 0;
+    int count = 0;
 };
 
 struct HydraMeshUpdate
@@ -1410,6 +1421,9 @@ struct HydraAnimationDriver
     std::unique_ptr<UsdImagingDelegate> imagingDelegate;
 };
 
+UsdStageRefPtr
+_GetOrOpenStage(const std::string& path, bool loadAllPayloads = true);
+
 class ReferenceHydraSyncDriver
 {
 public:
@@ -1417,7 +1431,7 @@ public:
         : _stagePath(std::move(stagePath))
         , _renderDelegate(std::move(renderInterface))
     {
-        _stage = UsdStage::Open(_stagePath);
+        _stage = _GetOrOpenStage(_stagePath);
         if (!_stage) {
             return;
         }
@@ -1581,6 +1595,7 @@ InitializeRuntime()
     }
 
     _ForceUsdSkelImagingStaticRegistration();
+    TfType::Define<GfHalf>();
     PlugRegistry::GetInstance().RegisterPlugins("/usd");
 
     const TfType resolverType = TfType::FindByName("Sdf_UsdzResolver");
@@ -1706,6 +1721,30 @@ _GetRelationshipTargetsFromLayers(const UsdPrim& prim, const TfToken& relName)
     return {};
 }
 
+SdfPathVector
+_GetMaterialBindingTargets(const UsdPrim& bindingPrim, const UsdRelationship& relationship)
+{
+    SdfPathVector targets;
+    if (!relationship.GetForwardedTargets(&targets) || targets.empty()) {
+        targets.clear();
+        relationship.GetTargets(&targets);
+    }
+    if (targets.empty()) {
+        targets = _GetRelationshipTargetsFromLayers(bindingPrim, relationship.GetName());
+    }
+    return targets;
+}
+
+TfToken
+_GetMaterialBindingStrength(const UsdRelationship& relationship)
+{
+    TfToken bindingStrength;
+    relationship.GetMetadata(UsdShadeTokens->bindMaterialAs, &bindingStrength);
+    return bindingStrength.IsEmpty()
+        ? UsdShadeTokens->weakerThanDescendants
+        : bindingStrength;
+}
+
 // Scan the stage for Material prims under the same root as the binding prim.
 // Used as last resort when relationship targets are invisible to the USD API.
 UsdPrim
@@ -1732,6 +1771,7 @@ UsdShadeMaterial
 _FindBoundMaterialByAuthoredRelationships(const UsdPrim& prim)
 {
     UsdStageWeakPtr stage = prim.GetStage();
+    UsdShadeMaterial weakestDescendantMaterial;
     for (UsdPrim bindingPrim = prim; bindingPrim && !bindingPrim.IsPseudoRoot();
          bindingPrim = bindingPrim.GetParent()) {
         for (const UsdRelationship& relationship : bindingPrim.GetRelationships()) {
@@ -1739,32 +1779,31 @@ _FindBoundMaterialByAuthoredRelationships(const UsdPrim& prim)
                 continue;
             }
 
-            SdfPathVector targets;
-            if (!relationship.GetForwardedTargets(&targets) || targets.empty()) {
-                targets.clear();
-                relationship.GetTargets(&targets);
-            }
-            if (targets.empty()) {
-                targets = _GetRelationshipTargetsFromLayers(bindingPrim, relationship.GetName());
-            }
-
-            for (const SdfPath& target : targets) {
+            for (const SdfPath& target :
+                 _GetMaterialBindingTargets(bindingPrim, relationship)) {
                 const SdfPath materialPath = target.IsPrimPath() ? target : target.GetPrimPath();
                 UsdShadeMaterial material(stage->GetPrimAtPath(materialPath));
                 if (material) {
-                    return material;
+                    if (_GetMaterialBindingStrength(relationship) ==
+                        UsdShadeTokens->strongerThanDescendants) {
+                        return material;
+                    }
+                    if (!weakestDescendantMaterial) {
+                        weakestDescendantMaterial = material;
+                    }
                 }
             }
         }
     }
 
-    return UsdShadeMaterial();
+    return weakestDescendantMaterial;
 }
 
 UsdPrim
 _FindBoundMaterialPrimByAuthoredRelationships(const UsdPrim& prim)
 {
     UsdStageWeakPtr stage = prim.GetStage();
+    UsdPrim weakestDescendantMaterialPrim;
     for (UsdPrim bindingPrim = prim; bindingPrim && !bindingPrim.IsPseudoRoot();
          bindingPrim = bindingPrim.GetParent()) {
         for (const UsdRelationship& relationship : bindingPrim.GetRelationships()) {
@@ -1772,23 +1811,25 @@ _FindBoundMaterialPrimByAuthoredRelationships(const UsdPrim& prim)
                 continue;
             }
 
-            SdfPathVector targets;
-            if (!relationship.GetForwardedTargets(&targets) || targets.empty()) {
-                targets.clear();
-                relationship.GetTargets(&targets);
-            }
-            if (targets.empty()) {
-                targets = _GetRelationshipTargetsFromLayers(bindingPrim, relationship.GetName());
-            }
-
-            for (const SdfPath& target : targets) {
+            for (const SdfPath& target :
+                 _GetMaterialBindingTargets(bindingPrim, relationship)) {
                 const SdfPath materialPath = target.IsPrimPath() ? target : target.GetPrimPath();
                 UsdPrim materialPrim = stage->GetPrimAtPath(materialPath);
                 if (materialPrim) {
-                    return materialPrim;
+                    if (_GetMaterialBindingStrength(relationship) ==
+                        UsdShadeTokens->strongerThanDescendants) {
+                        return materialPrim;
+                    }
+                    if (!weakestDescendantMaterialPrim) {
+                        weakestDescendantMaterialPrim = materialPrim;
+                    }
                 }
             }
         }
+    }
+
+    if (weakestDescendantMaterialPrim) {
+        return weakestDescendantMaterialPrim;
     }
 
     // All relationship APIs failed — scan stage for Material prims.
@@ -2746,11 +2787,11 @@ _ExtractMaterial(
     materialValue.set("metallic", 0.05f);
     materialValue.set("opacity", 1.0f);
 
-    UsdShadeMaterial material = UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial(
-        bindingsCache,
-        collectionQueryCache);
+    UsdShadeMaterial material = _FindBoundMaterialByAuthoredRelationships(prim);
     if (!material) {
-        material = _FindBoundMaterialByAuthoredRelationships(prim);
+        material = UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial(
+            bindingsCache,
+            collectionQueryCache);
     }
 
     UsdPrim materialPrim = material ? material.GetPrim() : UsdPrim();
@@ -2852,6 +2893,78 @@ _ExtractMaterial(
     }
 
     return materialValue;
+}
+
+std::vector<MaterialSubsetGroup>
+_ExtractMaterialSubsetGroups(const UsdGeomMesh& mesh, const MeshPayload& payload)
+{
+    std::vector<MaterialSubsetGroup> groups;
+    for (const UsdPrim& child : mesh.GetPrim().GetChildren()) {
+        if (!child.IsA<UsdGeomSubset>()) {
+            continue;
+        }
+
+        TfToken elementType;
+        child.GetAttribute(TfToken("elementType")).Get(&elementType);
+        if (elementType != TfToken("face")) {
+            continue;
+        }
+
+        TfToken familyName;
+        child.GetAttribute(TfToken("familyName")).Get(&familyName);
+        if (!familyName.IsEmpty() && familyName != TfToken("materialBind")) {
+            continue;
+        }
+
+        VtArray<int> faceIndices;
+        if (!child.GetAttribute(TfToken("indices")).Get(&faceIndices) ||
+            faceIndices.empty()) {
+            continue;
+        }
+
+        std::vector<int> sortedFaceIndices(faceIndices.begin(), faceIndices.end());
+        std::sort(sortedFaceIndices.begin(), sortedFaceIndices.end());
+
+        int runStart = -1;
+        int runEnd = -1;
+        for (const int faceIndex : sortedFaceIndices) {
+            if (faceIndex < 0 ||
+                static_cast<size_t>(faceIndex) >= payload.faceIndexStarts.size()) {
+                continue;
+            }
+            const int start = payload.faceIndexStarts[faceIndex];
+            const int count = payload.faceIndexCounts[faceIndex];
+            if (count <= 0) {
+                continue;
+            }
+
+            if (runStart < 0) {
+                runStart = start;
+                runEnd = start + count;
+                continue;
+            }
+            if (start == runEnd) {
+                runEnd += count;
+                continue;
+            }
+
+            groups.push_back({child, runStart, runEnd - runStart});
+            runStart = start;
+            runEnd = start + count;
+        }
+
+        if (runStart >= 0 && runEnd > runStart) {
+            groups.push_back({child, runStart, runEnd - runStart});
+        }
+    }
+
+    std::sort(
+        groups.begin(),
+        groups.end(),
+        [](const MaterialSubsetGroup& a, const MaterialSubsetGroup& b) {
+            return a.start < b.start;
+        });
+    return groups;
 }
 
 bool
@@ -2999,10 +3112,15 @@ _ExtractMeshPayload(
     };
 
     size_t offset = 0;
+    payload->faceIndexStarts.reserve(faceVertexCounts.size());
+    payload->faceIndexCounts.reserve(faceVertexCounts.size());
     for (int faceVertexCount : faceVertexCounts) {
+        const int faceStart = static_cast<int>(payload->triangleIndices.size());
         if (faceVertexCount < 3 ||
             offset + static_cast<size_t>(faceVertexCount) > faceVertexIndices.size()) {
             offset += std::max(faceVertexCount, 0);
+            payload->faceIndexStarts.push_back(faceStart);
+            payload->faceIndexCounts.push_back(0);
             continue;
         }
 
@@ -3022,6 +3140,9 @@ _ExtractMeshPayload(
             appendVertex(offset + i + 1);
         }
 
+        payload->faceIndexStarts.push_back(faceStart);
+        payload->faceIndexCounts.push_back(
+            static_cast<int>(payload->triangleIndices.size()) - faceStart);
         offset += faceVertexCount;
     }
 
@@ -3098,6 +3219,7 @@ _ExtractSkinnedControlPoints(
 // Cache to avoid re-opening the stage on every ExtractTransformsAtTime call.
 // Key is the normalized stage path passed by the JS caller.
 static std::unordered_map<std::string, UsdStageRefPtr> g_stageCache;
+static std::unordered_map<std::string, bool> g_stageLoadAllPayloadsOnOpen;
 static std::unordered_map<std::string, std::unique_ptr<UsdSkelCache>> g_skelCache;
 static std::unordered_map<std::string, bool> g_stageHasSkelRoot;
 static std::unordered_map<std::string, std::unordered_map<std::string, UsdSkelSkeleton>>
@@ -3107,15 +3229,24 @@ static std::unordered_map<std::string, LegacySkelBindingAuthoringDiagnostics>
     g_legacySkelBindingAuthoringDiagnostics;
 
 UsdStageRefPtr
-_GetOrOpenStage(const std::string& path)
+_OpenStageWithPayloadPolicy(const std::string& path, bool loadAllPayloads)
+{
+    return UsdStage::Open(
+        path,
+        loadAllPayloads ? UsdStage::LoadAll : UsdStage::LoadNone);
+}
+
+UsdStageRefPtr
+_GetOrOpenStage(const std::string& path, bool loadAllPayloads)
 {
     auto it = g_stageCache.find(path);
     if (it != g_stageCache.end()) {
         return it->second;
     }
-    UsdStageRefPtr stage = UsdStage::Open(path);
+    UsdStageRefPtr stage = _OpenStageWithPayloadPolicy(path, loadAllPayloads);
     if (stage) {
         g_stageCache[path] = stage;
+        g_stageLoadAllPayloadsOnOpen[path] = loadAllPayloads;
     }
     return stage;
 }
@@ -3568,6 +3699,29 @@ _ExtractRenderablesAtTime(const std::string& path, UsdTimeCode timeCode, bool in
                     &bindingsCache,
                     &collectionQueryCache,
                     renderable["color"]));
+            const std::vector<MaterialSubsetGroup> materialGroups =
+                _ExtractMaterialSubsetGroups(mesh, payload);
+            if (!materialGroups.empty()) {
+                emscripten::val materialSubsets = emscripten::val::array();
+                for (size_t subsetIndex = 0; subsetIndex < materialGroups.size(); ++subsetIndex) {
+                    const MaterialSubsetGroup& group = materialGroups[subsetIndex];
+                    emscripten::val subset = emscripten::val::object();
+                    subset.set("path", group.prim.GetPath().GetString());
+                    subset.set("name", group.prim.GetName().GetString());
+                    subset.set("start", group.start);
+                    subset.set("count", group.count);
+                    subset.set(
+                        "material",
+                        _ExtractMaterial(
+                            group.prim,
+                            packageRootPath,
+                            &bindingsCache,
+                            &collectionQueryCache,
+                            renderable["color"]));
+                    materialSubsets.set(subsetIndex, subset);
+                }
+                renderable.set("materialSubsets", materialSubsets);
+            }
         }
         renderables.set(renderableIndex++, renderable);
     }
@@ -3602,9 +3756,11 @@ ExtractRenderablesAtTime(const std::string& path, double timeCode)
 }
 
 emscripten::val
-OpenStage(const std::string& path)
+OpenStage(const std::string& path, bool loadAllPayloads = true)
 {
-    UsdStageRefPtr stage = _GetOrOpenStage(path);
+    _InvalidateDerivedStageCaches(path);
+    g_stageCache.erase(path);
+    UsdStageRefPtr stage = _GetOrOpenStage(path, loadAllPayloads);
     if (!stage) {
         return _ErrorResult(path, "Unable to open USD stage");
     }
@@ -3772,7 +3928,11 @@ ReopenStage(const std::string& stagePath)
         layer->Reload(/* force= */ true);
     }
     g_stageCache.erase(stagePath);
-    UsdStageRefPtr newStage = UsdStage::Open(stagePath);
+    const auto loadIt = g_stageLoadAllPayloadsOnOpen.find(stagePath);
+    const bool loadAllPayloads =
+        loadIt == g_stageLoadAllPayloadsOnOpen.end() ? true : loadIt->second;
+    UsdStageRefPtr newStage =
+        _OpenStageWithPayloadPolicy(stagePath, loadAllPayloads);
     if (!newStage) return false;
     g_stageCache[stagePath] = newStage;
     return true;
@@ -4295,6 +4455,32 @@ _HydraCollectorUpdatesToRenderableArray(
     return result;
 }
 
+void
+_CollectHydraRprims(
+    HydraAnimationDriver* driver,
+    const SdfPath& rootPath = SdfPath::AbsoluteRootPath())
+{
+    if (!driver || !driver->renderIndex) {
+        return;
+    }
+
+    const bool collectAll =
+        rootPath == SdfPath::AbsoluteRootPath() || rootPath.IsEmpty();
+    driver->collector.Clear();
+    for (const SdfPath& id : driver->renderIndex->GetRprimIds()) {
+        if (!collectAll && id != rootPath && !id.HasPrefix(rootPath)) {
+            continue;
+        }
+        HydraMeshUpdate update;
+        if (_BuildHydraMeshUpdate(
+                driver->renderIndex.get(),
+                id,
+                &update)) {
+            driver->collector.Record(std::move(update));
+        }
+    }
+}
+
 emscripten::val
 ExtractHydraRenderablesAtTime(const std::string& stagePath, double timeCode)
 {
@@ -4304,6 +4490,35 @@ ExtractHydraRenderablesAtTime(const std::string& stagePath, double timeCode)
     }
 
     _SyncHydraDriverAtTime(driver, timeCode);
+    return _HydraCollectorUpdatesToRenderableArray(stagePath, driver, timeCode);
+}
+
+emscripten::val
+ExtractHydraRenderableSnapshotAtTime(const std::string& stagePath, double timeCode)
+{
+    HydraAnimationDriver* driver = _GetOrCreateHydraAnimationDriver(stagePath);
+    if (!driver || !driver->renderIndex) {
+        return emscripten::val::array();
+    }
+
+    _SyncHydraDriverAtTime(driver, timeCode);
+    _CollectHydraRprims(driver);
+    return _HydraCollectorUpdatesToRenderableArray(stagePath, driver, timeCode);
+}
+
+emscripten::val
+ExtractHydraRenderableSubtreeAtTime(
+    const std::string& stagePath,
+    const std::string& primPath,
+    double timeCode)
+{
+    HydraAnimationDriver* driver = _GetOrCreateHydraAnimationDriver(stagePath);
+    if (!driver || !driver->renderIndex) {
+        return emscripten::val::array();
+    }
+
+    _SyncHydraDriverAtTime(driver, timeCode);
+    _CollectHydraRprims(driver, SdfPath(primPath));
     return _HydraCollectorUpdatesToRenderableArray(stagePath, driver, timeCode);
 }
 
@@ -4526,6 +4741,8 @@ EMSCRIPTEN_BINDINGS(usdWebViewBindings)
     emscripten::function("ExtractRenderablesWithMaterials", &ExtractRenderablesWithMaterials);
     emscripten::function("ExtractRenderablesAtTime", &ExtractRenderablesAtTime);
     emscripten::function("ExtractHydraRenderablesAtTime", &ExtractHydraRenderablesAtTime);
+    emscripten::function("ExtractHydraRenderableSnapshotAtTime", &ExtractHydraRenderableSnapshotAtTime);
+    emscripten::function("ExtractHydraRenderableSubtreeAtTime", &ExtractHydraRenderableSubtreeAtTime);
     emscripten::function("ExtractTransformsAtTime", &ExtractTransformsAtTime);
     emscripten::function("OpenStage", &OpenStage);
     emscripten::function("GetSceneGraph", &GetSceneGraph);

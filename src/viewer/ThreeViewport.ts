@@ -2,7 +2,6 @@ import {
   AmbientLight,
   AxesHelper,
   Box3,
-  BoxGeometry,
   Color,
   DirectionalLight,
   DoubleSide,
@@ -24,7 +23,7 @@ import {
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { EXRLoader } from "three/examples/jsm/loaders/EXRLoader.js";
-import type { PrimTransform, RenderableMesh, RenderableGaussianSplat, RenderableTexture, StageSummary } from "../usd/types";
+import type { PrimTransform, RenderableMaterial, RenderableMesh, RenderableGaussianSplat, RenderableTexture, StageSummary } from "../usd/types";
 import { GaussianSplatRenderer, type SplatViewOptions } from "./GaussianSplatRenderer";
 
 interface FrameAnim {
@@ -133,35 +132,14 @@ export class ThreeViewport {
     this.renderer.dispose();
   }
 
-  setPlaceholderStage(label: string): void {
-    this.clearStage();
-
-    const geometry = new BoxGeometry(1.4, 1.4, 1.4);
-    const material = new MeshPhysicalMaterial({
-      color: 0xd2b46d,
-      metalness: 0.15,
-      roughness: 0.42,
-      side: DoubleSide,
-    });
-    const mesh = new Mesh(geometry, material);
-    mesh.name = label;
-    this.stageRoot.add(mesh);
-    this.applyViewUpAxis();
-    this.frameStage();
-  }
-
   renderStage(
     renderables: RenderableMesh[],
-    summary: StageSummary | null,
-    hasSplats = false
+    _summary: StageSummary | null,
+    _hasSplats = false
   ): void {
     if (!renderables.length) {
-      if (!hasSplats) {
-        this.setPlaceholderStage(summary?.rootFile ?? "USD stage");
-      } else {
-        this.clearStage();
-        this.applyViewUpAxis();
-      }
+      this.clearStage();
+      this.applyViewUpAxis();
       return;
     }
 
@@ -170,37 +148,7 @@ export class ThreeViewport {
     for (const renderable of renderables) {
       const geometry = this.buildGeometry(renderable);
 
-      const mat = renderable.material;
-      const [red = 0.72, green = 0.72, blue = 0.72] =
-        mat?.diffuseColor ?? renderable.color ?? [];
-
-      const material = new MeshPhysicalMaterial({
-        color: new Color(red, green, blue),
-        metalness: mat?.metallicTexture ? 1.0 : (mat?.metallic ?? 0.05),
-        roughness: mat?.roughnessTexture ? 1.0 : (mat?.roughness ?? 0.55),
-        opacity: mat?.opacity ?? 1,
-        transparent: (mat?.opacity ?? 1) < 1,
-        clearcoat: mat?.clearcoat ?? 0,
-        clearcoatRoughness: mat?.clearcoatRoughness ?? 0,
-        ior: mat?.ior ?? 1.5,
-        side: DoubleSide,
-      });
-
-      if (mat?.emissiveColor) {
-        const [er = 0, eg = 0, eb = 0] = mat.emissiveColor;
-        material.emissive = new Color(er, eg, eb);
-      }
-
-      this.applyTexture(material, "map",                    mat?.diffuseTexture,            true);
-      this.applyTexture(material, "roughnessMap",           mat?.roughnessTexture,          false);
-      this.applyTexture(material, "metalnessMap",           mat?.metallicTexture,           false);
-      this.applyTexture(material, "normalMap",              mat?.normalTexture,             false);
-      this.applyTexture(material, "aoMap",                  mat?.occlusionTexture,          false);
-      this.applyTexture(material, "emissiveMap",            mat?.emissiveTexture,           true);
-      this.applyTexture(material, "clearcoatMap",           mat?.clearcoatTexture,          false);
-      this.applyTexture(material, "clearcoatRoughnessMap",  mat?.clearcoatRoughnessTexture, false);
-      this.applyTexture(material, "alphaMap",               mat?.opacityTexture,            false);
-
+      const material = this.createRenderableMaterials(renderable);
       const mesh = new Mesh(geometry, material);
       mesh.name = renderable.name || renderable.path;
       mesh.userData.ptsLen  = renderable.points.length;
@@ -232,13 +180,11 @@ export class ThreeViewport {
   }
 
   createReferenceHydraRenderInterface(): ReferenceHydraRenderInterface {
-    console.info("[USD WebView] creating Three reference hydra render interface");
     this.clearStage();
     this.applyViewUpAxis();
 
     return {
       createRPrim: (_type: string, id: string): ReferenceHydraRPrim => {
-        console.info(`[USD WebView] direct hydra createRPrim type=${_type} id=${id}`);
         const geometry = new BufferGeometry();
         const material = new MeshPhysicalMaterial({
           color: new Color(0xb8c4cf),
@@ -255,8 +201,6 @@ export class ThreeViewport {
 
         let points = new Float32Array();
         let indices = new Int32Array();
-        let pointUpdateCount = 0;
-        let lastPointFingerprint = "";
 
         const updateGeometry = (): void => {
           if (!points.length || !indices.length) return;
@@ -275,14 +219,6 @@ export class ThreeViewport {
         return {
           updatePoints: (nextPoints: Float32Array): void => {
             points = new Float32Array(nextPoints);
-            pointUpdateCount += 1;
-            const fingerprint = this.geometryFingerprint(points);
-            if (pointUpdateCount <= 5 || fingerprint !== lastPointFingerprint) {
-              console.info(
-                `[USD WebView] direct hydra points ${id} update=${pointUpdateCount} values=${points.length} fingerprint=${fingerprint}`
-              );
-            }
-            lastPointFingerprint = fingerprint;
             updateGeometry();
           },
           updateIndices: (nextIndices: Int32Array): void => {
@@ -349,12 +285,33 @@ export class ThreeViewport {
   }
 
   updateRenderables(renderables: RenderableMesh[]): void {
+    this.updateRenderablesInScope(renderables);
+  }
+
+  updateRenderablesUnderRoot(
+    rootPath: string,
+    renderables: RenderableMesh[],
+    forceGeometryUpdate = false
+  ): void {
+    const rootPrefix = `${rootPath}/`;
+    this.updateRenderablesInScope(
+      renderables,
+      (path) => path === rootPath || path.startsWith(rootPrefix),
+      forceGeometryUpdate
+    );
+  }
+
+  private updateRenderablesInScope(
+    renderables: RenderableMesh[],
+    pathInScope: (path: string) => boolean = () => true,
+    forceGeometryUpdate = false
+  ): void {
     const newPaths = new Set(renderables.map(r => r.path));
     for (const [path, mesh] of [...this.meshByPath.entries()]) {
-      if (!newPaths.has(path)) {
+      if (pathInScope(path) && !newPaths.has(path)) {
         this.stageRoot.remove(mesh);
         mesh.geometry.dispose();
-        (mesh.material as MeshPhysicalMaterial).dispose();
+        this.disposeMeshMaterials(mesh);
         this.meshByPath.delete(path);
         this.pathByMesh.delete(mesh);
         this.highlightedMeshes.delete(mesh);
@@ -370,29 +327,24 @@ export class ThreeViewport {
         }
         const len = renderable.points.length;
         const fingerprint = this.geometryFingerprint(renderable.points);
-        if (existing.userData.ptsLen !== len || existing.userData.ptsFingerprint !== fingerprint) {
+        if (
+          forceGeometryUpdate ||
+          existing.userData.ptsLen !== len ||
+          existing.userData.ptsFingerprint !== fingerprint
+        ) {
           this.updateGeometryPositions(existing.geometry, renderable);
           existing.userData.ptsLen = len;
           existing.userData.ptsFingerprint = fingerprint;
+        }
+        if (renderable.materialSubsets?.length || renderable.material || renderable.color) {
+          this.updateMeshMaterials(existing, renderable);
         }
         if (this.highlightedMeshes.has(existing)) {
           this.applyHighlight(existing);
         }
       } else {
-        const [r = 0.72, g = 0.72, b = 0.72] = renderable.material?.diffuseColor ?? renderable.color ?? [];
-        const rmat = renderable.material;
         const geometry = this.buildGeometry(renderable);
-        const material = new MeshPhysicalMaterial({
-          color: new Color(r, g, b),
-          metalness: rmat?.metallicTexture ? 1.0 : (rmat?.metallic ?? 0.05),
-          roughness: rmat?.roughnessTexture ? 1.0 : (rmat?.roughness ?? 0.55),
-          opacity: rmat?.opacity ?? 1,
-          transparent: (rmat?.opacity ?? 1) < 1,
-          clearcoat: rmat?.clearcoat ?? 0,
-          clearcoatRoughness: rmat?.clearcoatRoughness ?? 0,
-          ior: rmat?.ior ?? 1.5,
-          side: DoubleSide,
-        });
+        const material = this.createRenderableMaterials(renderable);
         const mesh = new Mesh(geometry, material);
         mesh.name = renderable.name || renderable.path;
         mesh.userData.ptsLen = renderable.points.length;
@@ -415,8 +367,6 @@ export class ThreeViewport {
   async updateRenderablesAsync(renderables: RenderableMesh[]): Promise<void> {
     const textureLoads: Promise<void>[] = [];
     for (const renderable of renderables) {
-      const rmat = renderable.material;
-      if (!rmat && !renderable.color) continue;
       const existing = this.meshByPath.get(renderable.path);
       if (!existing) continue;
 
@@ -429,32 +379,118 @@ export class ThreeViewport {
           existing.geometry.setAttribute("uv1", uvAttr.clone());
         }
       }
-      const [r = 0.72, g = 0.72, b = 0.72] = rmat?.diffuseColor ?? renderable.color ?? [];
-      const material = existing.material as MeshPhysicalMaterial;
-      material.color.setRGB(r, g, b);
-      material.metalness = rmat?.metallicTexture ? 1.0 : (rmat?.metallic ?? 0.05);
-      material.roughness = rmat?.roughnessTexture ? 1.0 : (rmat?.roughness ?? 0.55);
-      material.opacity   = rmat?.opacity ?? 1;
-      material.transparent = (rmat?.opacity ?? 1) < 1;
-      material.clearcoat          = rmat?.clearcoat ?? 0;
-      material.clearcoatRoughness = rmat?.clearcoatRoughness ?? 0;
-      material.ior = rmat?.ior ?? 1.5;
-      if (rmat?.emissiveColor) {
-        const [er = 0, eg = 0, eb = 0] = rmat.emissiveColor;
-        material.emissive.setRGB(er, eg, eb);
-      }
-      textureLoads.push(this.applyTexture(material, "map",                    rmat?.diffuseTexture,            true));
-      textureLoads.push(this.applyTexture(material, "roughnessMap",           rmat?.roughnessTexture,          false));
-      textureLoads.push(this.applyTexture(material, "metalnessMap",           rmat?.metallicTexture,           false));
-      textureLoads.push(this.applyTexture(material, "normalMap",              rmat?.normalTexture,             false));
-      textureLoads.push(this.applyTexture(material, "aoMap",                  rmat?.occlusionTexture,          false));
-      textureLoads.push(this.applyTexture(material, "emissiveMap",            rmat?.emissiveTexture,           true));
-      textureLoads.push(this.applyTexture(material, "clearcoatMap",           rmat?.clearcoatTexture,          false));
-      textureLoads.push(this.applyTexture(material, "clearcoatRoughnessMap",  rmat?.clearcoatRoughnessTexture, false));
-      textureLoads.push(this.applyTexture(material, "alphaMap",               rmat?.opacityTexture,            false));
-      material.needsUpdate = true;
+      this.applyGeometryGroups(existing.geometry, renderable);
+      this.updateMeshMaterials(existing, renderable, textureLoads);
     }
     await Promise.all(textureLoads);
+  }
+
+  private createRenderableMaterials(renderable: RenderableMesh): MeshPhysicalMaterial | MeshPhysicalMaterial[] {
+    if (renderable.materialSubsets?.length) {
+      return this.getUniqueSubsetMaterials(renderable).map((material) =>
+        this.createMaterial(renderable, material)
+      );
+    }
+    return this.createMaterial(renderable, renderable.material);
+  }
+
+  private updateMeshMaterials(
+    mesh: Mesh,
+    renderable: RenderableMesh,
+    textureLoads?: Promise<void>[]
+  ): void {
+    const nextMaterials = this.createRenderableMaterials(renderable);
+    const currentIsArray = Array.isArray(mesh.material);
+    const nextIsArray = Array.isArray(nextMaterials);
+    if (currentIsArray !== nextIsArray ||
+        (nextIsArray && (mesh.material as MeshPhysicalMaterial[]).length !== nextMaterials.length)) {
+      this.disposeMeshMaterials(mesh);
+      mesh.material = nextMaterials;
+    }
+
+    const materials = Array.isArray(mesh.material)
+      ? mesh.material as MeshPhysicalMaterial[]
+      : [mesh.material as MeshPhysicalMaterial];
+    const materialSources = renderable.materialSubsets?.length
+      ? this.getUniqueSubsetMaterials(renderable)
+      : [renderable.material];
+
+    for (let index = 0; index < materials.length; ++index) {
+      this.updateMaterialProperties(materials[index], renderable, materialSources[index]);
+      this.applyMaterialTextures(materials[index], materialSources[index], textureLoads);
+    }
+    mesh.material = Array.isArray(mesh.material) ? materials : materials[0];
+  }
+
+  private createMaterial(
+    renderable: RenderableMesh,
+    rmat = renderable.material
+  ): MeshPhysicalMaterial {
+    const [r = 0.72, g = 0.72, b = 0.72] = rmat?.diffuseColor ?? renderable.color ?? [];
+    const material = new MeshPhysicalMaterial({
+      color: new Color(r, g, b),
+      metalness: rmat?.metallicTexture ? 1.0 : (rmat?.metallic ?? 0.05),
+      roughness: rmat?.roughnessTexture ? 1.0 : (rmat?.roughness ?? 0.55),
+      opacity: rmat?.opacity ?? 1,
+      transparent: this.isTransparentMaterial(rmat),
+      depthWrite: !this.isTransparentMaterial(rmat),
+      clearcoat: rmat?.clearcoat ?? 0,
+      clearcoatRoughness: rmat?.clearcoatRoughness ?? 0,
+      ior: rmat?.ior ?? 1.5,
+      side: DoubleSide,
+    });
+    this.updateMaterialProperties(material, renderable, rmat);
+    this.applyMaterialTextures(material, rmat);
+    return material;
+  }
+
+  private updateMaterialProperties(
+    material: MeshPhysicalMaterial,
+    renderable: RenderableMesh,
+    rmat = renderable.material
+  ): void {
+    const [r = 0.72, g = 0.72, b = 0.72] = rmat?.diffuseColor ?? renderable.color ?? [];
+    material.color.setRGB(r, g, b);
+    material.metalness = rmat?.metallicTexture ? 1.0 : (rmat?.metallic ?? 0.05);
+    material.roughness = rmat?.roughnessTexture ? 1.0 : (rmat?.roughness ?? 0.55);
+    material.opacity = rmat?.opacity ?? 1;
+    material.transparent = this.isTransparentMaterial(rmat);
+    material.depthWrite = !this.isTransparentMaterial(rmat);
+    material.clearcoat = rmat?.clearcoat ?? 0;
+    material.clearcoatRoughness = rmat?.clearcoatRoughness ?? 0;
+    material.ior = rmat?.ior ?? 1.5;
+    if (rmat?.emissiveColor) {
+      const [er = 0, eg = 0, eb = 0] = rmat.emissiveColor;
+      material.emissive.setRGB(er, eg, eb);
+    } else {
+      material.emissive.setRGB(0, 0, 0);
+    }
+    material.needsUpdate = true;
+  }
+
+  private applyMaterialTextures(
+    material: MeshPhysicalMaterial,
+    rmat?: RenderableMaterial,
+    textureLoads?: Promise<void>[]
+  ): void {
+    const loads = [
+      this.applyTexture(material, "map",                    rmat?.diffuseTexture,            true),
+      this.applyTexture(material, "roughnessMap",           rmat?.roughnessTexture,          false),
+      this.applyTexture(material, "metalnessMap",           rmat?.metallicTexture,           false),
+      this.applyTexture(material, "normalMap",              rmat?.normalTexture,             false),
+      this.applyTexture(material, "aoMap",                  rmat?.occlusionTexture,          false),
+      this.applyTexture(material, "emissiveMap",            rmat?.emissiveTexture,           true),
+      this.applyTexture(material, "clearcoatMap",           rmat?.clearcoatTexture,          false),
+      this.applyTexture(material, "clearcoatRoughnessMap",  rmat?.clearcoatRoughnessTexture, false),
+      this.applyTexture(material, "alphaMap",               rmat?.opacityTexture,            false),
+    ];
+    if (textureLoads) {
+      textureLoads.push(...loads);
+    }
+  }
+
+  private isTransparentMaterial(rmat?: RenderableMaterial): boolean {
+    return (rmat?.opacity ?? 1) < 1 || !!rmat?.opacityTexture;
   }
 
   updateTransforms(transforms: PrimTransform[]): void {
@@ -488,6 +524,10 @@ export class ThreeViewport {
         geo.setAttribute(key, newGeo.attributes[key]);
       }
       geo.index = newGeo.index;
+      geo.clearGroups();
+      for (const group of newGeo.groups) {
+        geo.addGroup(group.start, group.count, group.materialIndex ?? 0);
+      }
       if (!geo.attributes.uv && savedUv) geo.setAttribute("uv", savedUv);
       if (!geo.attributes.uv1 && savedUv1) geo.setAttribute("uv1", savedUv1);
     }
@@ -517,8 +557,41 @@ export class ThreeViewport {
       geo.setAttribute("uv", uvAttr);
       geo.setAttribute("uv1", uvAttr.clone());
     }
+    if (renderable.materialSubsets?.length) {
+      this.applyGeometryGroups(geo, renderable);
+    }
     this.setExpandedVertexNormals(geo, points, indices);
     return geo;
+  }
+
+  private applyGeometryGroups(geo: BufferGeometry, renderable: RenderableMesh): void {
+    geo.clearGroups();
+    if (!renderable.materialSubsets?.length) return;
+    const slots = new Map<string, number>();
+    for (let index = 0; index < renderable.materialSubsets.length; ++index) {
+      const subset = renderable.materialSubsets[index];
+      const key = this.getSubsetMaterialKey(subset.material, subset.path);
+      if (!slots.has(key)) {
+        slots.set(key, slots.size);
+      }
+      geo.addGroup(subset.start, subset.count, slots.get(key) ?? 0);
+    }
+  }
+
+  private getUniqueSubsetMaterials(renderable: RenderableMesh): (RenderableMaterial | undefined)[] {
+    const materials: (RenderableMaterial | undefined)[] = [];
+    const seen = new Set<string>();
+    for (const subset of renderable.materialSubsets ?? []) {
+      const key = this.getSubsetMaterialKey(subset.material, subset.path);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      materials.push(subset.material);
+    }
+    return materials;
+  }
+
+  private getSubsetMaterialKey(material: RenderableMaterial | undefined, fallbackPath: string): string {
+    return material?.path ?? fallbackPath;
   }
 
   private setExpandedVertexNormals(
@@ -622,12 +695,26 @@ export class ThreeViewport {
     asset: RenderableTexture | undefined,
     sRGB: boolean
   ): Promise<void> {
+    const materialRecord = material as unknown as Record<string, unknown>;
+    const userData = material.userData as Record<string, unknown>;
+    const textureKey = `texture:${String(slot)}`;
+
     if (!asset?.data?.length) {
+      if (userData[textureKey] !== undefined) {
+        userData[textureKey] = undefined;
+      }
+      const previous = materialRecord[slot as string];
+      if (previous instanceof Texture && previous.userData.webviewManaged) {
+        previous.dispose();
+        this.managedTextures.delete(previous);
+      }
+      if (previous) {
+        materialRecord[slot as string] = null;
+        material.needsUpdate = true;
+      }
       return Promise.resolve();
     }
 
-    const userData = material.userData as Record<string, unknown>;
-    const textureKey = `texture:${String(slot)}`;
     if (userData[textureKey] === asset.path) {
       return Promise.resolve();
     }
@@ -650,8 +737,6 @@ export class ThreeViewport {
       if (slot === "emissiveMap" && material.emissive.getHex() === 0x000000) {
         material.emissive.set(0xffffff);
       }
-
-      const materialRecord = material as unknown as Record<string, unknown>;
       const previous = materialRecord[slot as string];
       if (previous instanceof Texture && previous.userData.webviewManaged) {
         previous.dispose();
@@ -722,6 +807,16 @@ export class ThreeViewport {
     }
   }
 
+  private disposeMeshMaterials(mesh: Mesh): void {
+    const materials = Array.isArray(mesh.material)
+      ? mesh.material as MeshPhysicalMaterial[]
+      : [mesh.material as MeshPhysicalMaterial];
+    for (const material of materials) {
+      this.disposeMaterialTextures(material);
+      material.dispose();
+    }
+  }
+
   private revokeTextureUrls(): void {
     for (const texture of this.managedTextures) {
       texture.dispose();
@@ -767,20 +862,31 @@ export class ThreeViewport {
   }
 
   private applyHighlight(mesh: Mesh): void {
-    const mat = mesh.material as MeshPhysicalMaterial;
+    const materials = Array.isArray(mesh.material)
+      ? mesh.material as MeshPhysicalMaterial[]
+      : [mesh.material as MeshPhysicalMaterial];
     if (!mesh.userData.selEmissive) {
-      mesh.userData.selEmissive = mat.emissive.clone();
+      mesh.userData.selEmissive = materials.map((mat) => mat.emissive.clone());
     }
-    mat.emissive.set(0x3d1a00); // warm amber, visible on most materials
-    mat.needsUpdate = true;
+    for (const mat of materials) {
+      mat.emissive.set(0x3d1a00); // warm amber, visible on most materials
+      mat.needsUpdate = true;
+    }
   }
 
   private clearHighlight(mesh: Mesh): void {
-    const mat = mesh.material as MeshPhysicalMaterial;
-    if (mesh.userData.selEmissive) {
-      mat.emissive.copy(mesh.userData.selEmissive);
+    const materials = Array.isArray(mesh.material)
+      ? mesh.material as MeshPhysicalMaterial[]
+      : [mesh.material as MeshPhysicalMaterial];
+    const saved = mesh.userData.selEmissive as Color[] | undefined;
+    if (saved) {
+      for (let index = 0; index < materials.length; ++index) {
+        if (saved[index]) {
+          materials[index].emissive.copy(saved[index]);
+          materials[index].needsUpdate = true;
+        }
+      }
       mesh.userData.selEmissive = null;
-      mat.needsUpdate = true;
     }
   }
 

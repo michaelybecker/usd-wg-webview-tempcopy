@@ -1,7 +1,7 @@
 import createUsdWebViewBindingsModule from "./usdWebViewBindingsModule.js";
 
-const _wasmBuildId = "2026-05-19v"; // bump on every WASM rebuild to bust browser cache
-const _wrapperBuildId = "reference-hydra-direct-match-2026-05-19g";
+const _wasmBuildId = "2026-05-20f"; // bump on every WASM rebuild to bust browser cache
+const _wrapperBuildId = "authored-material-binding-first-2026-05-20a";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
@@ -36,10 +36,6 @@ function ensureDirectory(module, path) {
 
 window.UsdWebViewBindings = {
   async createRuntime(options = {}) {
-    console.info(
-      `[USD WebView] wrapper=${_wrapperBuildId} wasm=${_wasmBuildId}`
-    );
-
     const module = await createUsdWebViewBindingsModule({
       locateFile(path) {
         const base = options.locateFile?.(path) ?? path;
@@ -136,6 +132,18 @@ window.UsdWebViewBindings = {
       extractHydraRenderablesAtTime(path, timeCode) {
         return module.ExtractHydraRenderablesAtTime(normalizePath(path), timeCode);
       },
+      extractHydraRenderableSnapshotAtTime(path, timeCode) {
+        if (!module.ExtractHydraRenderableSnapshotAtTime) {
+          return null;
+        }
+        return module.ExtractHydraRenderableSnapshotAtTime(normalizePath(path), timeCode);
+      },
+      extractHydraRenderableSubtreeAtTime(path, primPath, timeCode) {
+        if (!module.ExtractHydraRenderableSubtreeAtTime) {
+          return null;
+        }
+        return module.ExtractHydraRenderableSubtreeAtTime(normalizePath(path), primPath, timeCode);
+      },
       createHydraSyncDriver(path) {
         if (!module.CreateHydraSyncDriver) {
           return null;
@@ -170,7 +178,6 @@ window.UsdWebViewBindings = {
           console.warn("[USD WebView] CreateReferenceHydraDriver is not available");
           return null;
         }
-        console.info(`[USD WebView] creating reference hydra driver for ${normalizePath(path)}`);
         const handle = module.CreateReferenceHydraDriver(
           normalizePath(path),
           renderInterface
@@ -179,7 +186,6 @@ window.UsdWebViewBindings = {
           console.warn("[USD WebView] reference hydra driver returned null handle");
           return null;
         }
-        console.info(`[USD WebView] reference hydra driver handle=${handle}`);
         return {
           SetTime(timeCode) {
             module.SetReferenceHydraDriverTime(handle, timeCode);
@@ -207,8 +213,8 @@ window.UsdWebViewBindings = {
       extractTransformsAtTime(path, timeCode) {
         return module.ExtractTransformsAtTime(normalizePath(path), timeCode);
       },
-      openStage(path) {
-        return module.OpenStage(normalizePath(path));
+      openStage(path, loadAllPayloads = true) {
+        return module.OpenStage(normalizePath(path), loadAllPayloads);
       },
       inspectPrimRelationships(stagePath, primPath) {
         return module.InspectPrimRelationships(normalizePath(stagePath), primPath);
@@ -230,6 +236,21 @@ window.UsdWebViewBindings = {
       },
       setVariantSelection(stagePath, primPath, variantSetName, selection) {
         const normalized = normalizePath(stagePath);
+
+        if (module.SetVariantSelection) {
+          const changed = module.SetVariantSelection(
+            normalized,
+            primPath,
+            variantSetName,
+            selection
+          );
+          if (changed) {
+            return true;
+          }
+          console.warn(
+            `[USD WebView] native variant selection failed for ${primPath} ${variantSetName}=${selection}; falling back to root-layer edit`
+          );
+        }
 
         if (!_variantSelections.has(normalized)) {
           _variantSelections.set(normalized, new Map());
