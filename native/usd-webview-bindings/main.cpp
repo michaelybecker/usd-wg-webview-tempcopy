@@ -6,6 +6,7 @@
 #include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/vt/array.h"
 #include "pxr/base/gf/half.h"
+#include "pxr/base/gf/interval.h"
 #include "pxr/base/gf/matrix4d.h"
 #include "pxr/base/gf/quath.h"
 #include "pxr/base/gf/vec2f.h"
@@ -20,19 +21,23 @@
 #include "pxr/imaging/hd/extComputation.h"
 #include "pxr/imaging/hd/extComputationPrimvarsSchema.h"
 #include "pxr/imaging/hd/extComputationUtils.h"
+#include "pxr/imaging/hd/engine.h"
 #include "pxr/imaging/hd/filteringSceneIndex.h"
 #include "pxr/imaging/hd/instancer.h"
 #include "pxr/imaging/hd/light.h"
 #include "pxr/imaging/hd/material.h"
 #include "pxr/imaging/hd/mesh.h"
+#include "pxr/imaging/hd/meshUtil.h"
 #include "pxr/imaging/hd/overlayContainerDataSource.h"
 #include "pxr/imaging/hd/renderDelegate.h"
 #include "pxr/imaging/hd/renderIndex.h"
+#include "pxr/imaging/hd/renderPass.h"
 #include "pxr/imaging/hd/resourceRegistry.h"
 #include "pxr/imaging/hd/rprimCollection.h"
 #include "pxr/imaging/hd/sceneIndexAdapterSceneDelegate.h"
 #include "pxr/imaging/hd/retainedDataSource.h"
 #include "pxr/imaging/hd/tokens.h"
+#include "pxr/imaging/hd/unitTestNullRenderPass.h"
 #include "pxr/imaging/hdsi/sceneGlobalsSceneIndex.h"
 #include "pxr/usd/ar/asset.h"
 #include "pxr/usd/ar/definePackageResolver.h"
@@ -73,6 +78,7 @@
 #include "pxr/usd/usdSkel/animQuery.h"
 #include "pxr/usd/usdSkel/animMapper.h"
 #include "pxr/usd/usdSkel/animation.h"
+#include "pxr/usd/usdSkel/bakeSkinning.h"
 #include "pxr/usd/usdSkel/binding.h"
 #include "pxr/usd/usdSkel/bindingAPI.h"
 #include "pxr/usd/usdSkel/cache.h"
@@ -98,8 +104,10 @@
 #include <emscripten/val.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -128,6 +136,10 @@ struct HydraMeshUpdate
     int pointComputationCount = 0;
     int sceneIndexChildCount = 0;
     bool sceneIndexHasSkelRoot = false;
+    unsigned dirtyBits = 0;
+    bool dirtyPoints = false;
+    bool dirtyTransform = false;
+    bool dirtyTopology = false;
     std::string sceneIndexSkeletonPath;
     std::string sceneIndexAnimationSourcePath;
     std::string sceneIndexAnimationPrimType;
@@ -165,7 +177,113 @@ struct LegacySkelBindingAuthoringDiagnostics
     int meshSkinningQueries = 0;
     int meshInferredSkeletons = 0;
     int relationshipSpecs = 0;
+    int relationshipCreateAttempts = 0;
+    int relationshipCreateFailures = 0;
+    std::string firstRelationshipFailurePath;
+    std::string sessionLayerIdentifier;
 };
+
+struct UsdaOverlayPrim
+{
+    std::map<std::string, UsdaOverlayPrim> children;
+    std::vector<std::pair<std::string, SdfPath>> relationships;
+    bool applySkelBindingAPI = false;
+};
+
+std::string
+_EscapeUsdaString(const std::string& value)
+{
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (const char ch : value) {
+        if (ch == '\\' || ch == '"') {
+            escaped.push_back('\\');
+        }
+        escaped.push_back(ch);
+    }
+    return escaped;
+}
+
+std::string
+_EscapeUsdaAssetPath(const std::string& value)
+{
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (const char ch : value) {
+        if (ch == '@') {
+            escaped += "@@";
+        } else {
+            escaped.push_back(ch);
+        }
+    }
+    return escaped;
+}
+
+UsdaOverlayPrim*
+_GetUsdaOverlayPrim(UsdaOverlayPrim* root, const SdfPath& primPath)
+{
+    if (!root || !primPath.IsAbsolutePath() || !primPath.IsPrimPath()) {
+        return nullptr;
+    }
+
+    UsdaOverlayPrim* node = root;
+    for (const SdfPath& prefix : primPath.GetPrefixes()) {
+        if (prefix == SdfPath::AbsoluteRootPath()) {
+            continue;
+        }
+        node = &node->children[prefix.GetName()];
+    }
+    return node;
+}
+
+void
+_AddUsdaOverlayRelationship(
+    UsdaOverlayPrim* root,
+    const SdfPath& primPath,
+    const std::string& relationshipName,
+    const SdfPath& targetPath,
+    bool applySkelBindingAPI = true)
+{
+    UsdaOverlayPrim* node = _GetUsdaOverlayPrim(root, primPath);
+    if (!node) {
+        return;
+    }
+    if (applySkelBindingAPI) {
+        node->applySkelBindingAPI = true;
+    }
+    for (const auto& existing : node->relationships) {
+        if (existing.first == relationshipName && existing.second == targetPath) {
+            return;
+        }
+    }
+    node->relationships.push_back({ relationshipName, targetPath });
+}
+
+void
+_WriteUsdaOverlayPrim(
+    std::ostringstream& oss,
+    const UsdaOverlayPrim& prim,
+    const std::string& name,
+    int indent)
+{
+    const std::string spaces(indent, ' ');
+    oss << spaces << "over \"" << _EscapeUsdaString(name) << "\"";
+    if (prim.applySkelBindingAPI) {
+        oss << " (\n";
+        oss << spaces << "    prepend apiSchemas = [\"SkelBindingAPI\"]\n";
+        oss << spaces << ")";
+    }
+    oss << "\n";
+    oss << spaces << "{\n";
+    for (const auto& relationship : prim.relationships) {
+        oss << spaces << "    rel " << relationship.first << " = <"
+            << relationship.second.GetString() << ">\n";
+    }
+    for (const auto& child : prim.children) {
+        _WriteUsdaOverlayPrim(oss, child.second, child.first, indent + 4);
+    }
+    oss << spaces << "}\n";
+}
 
 SdfPrimSpecHandle
 _EnsurePrimSpecInLayer(const SdfLayerHandle& layer, const SdfPath& primPath)
@@ -191,12 +309,14 @@ _EnsurePrimSpecInLayer(const SdfLayerHandle& layer, const SdfPath& primPath)
             return SdfPrimSpecHandle();
         }
 
-        SdfPrimSpecHandle childSpec;
+        SdfPrimSpecHandle childSpec = layer->GetPrimAtPath(prefix);
         const std::string name = prefix.GetName();
-        for (const SdfPrimSpecHandle& child : primSpec->GetNameChildren()) {
-            if (child && child->GetName() == name) {
-                childSpec = child;
-                break;
+        if (!childSpec) {
+            for (const SdfPrimSpecHandle& child : primSpec->GetNameChildren()) {
+                if (child && child->GetName() == name) {
+                    childSpec = child;
+                    break;
+                }
             }
         }
         if (!childSpec) {
@@ -216,6 +336,42 @@ _EnsurePrimSpecInLayer(const SdfLayerHandle& layer, const SdfPath& primPath)
     return primSpec;
 }
 
+SdfRelationshipSpecHandle
+_EnsureRelationshipSpecInLayer(
+    const SdfLayerHandle& layer,
+    const SdfPath& primPath,
+    const TfToken& relationshipName,
+    LegacySkelBindingAuthoringDiagnostics* diagnostics = nullptr)
+{
+    SdfPrimSpecHandle primSpec = _EnsurePrimSpecInLayer(layer, primPath);
+    if (!primSpec) {
+        return SdfRelationshipSpecHandle();
+    }
+
+    const SdfPath relationshipPath =
+        primPath.AppendProperty(relationshipName);
+    if (diagnostics) {
+        ++diagnostics->relationshipCreateAttempts;
+    }
+    SdfRelationshipSpecHandle relSpec =
+        layer->GetRelationshipAtPath(relationshipPath);
+    if (!relSpec) {
+        relSpec = SdfRelationshipSpec::New(
+            primSpec,
+            relationshipName.GetString(),
+            /* custom = */ false,
+            SdfVariabilityUniform);
+    }
+    if (!relSpec && diagnostics) {
+        ++diagnostics->relationshipCreateFailures;
+        if (diagnostics->firstRelationshipFailurePath.empty()) {
+            diagnostics->firstRelationshipFailurePath =
+                relationshipPath.GetString();
+        }
+    }
+    return relSpec;
+}
+
 class WebViewHydraMeshCollector
 {
 public:
@@ -231,6 +387,49 @@ public:
 
     std::unordered_map<std::string, HydraMeshUpdate> updates;
     HydraDiagnostics diagnostics;
+};
+
+class WebViewHydraSyncTask final : public HdTask
+{
+public:
+    WebViewHydraSyncTask(
+        HdRenderPassSharedPtr const& renderPass,
+        TfTokenVector renderTags)
+        : HdTask(SdfPath::EmptyPath())
+        , _renderPass(renderPass)
+        , _renderTags(std::move(renderTags))
+    {
+    }
+
+    void Sync(
+        HdSceneDelegate* delegate,
+        HdTaskContext* ctx,
+        HdDirtyBits* dirtyBits) override
+    {
+        if (_renderPass) {
+            _renderPass->Sync();
+        }
+        if (dirtyBits) {
+            *dirtyBits = HdChangeTracker::Clean;
+        }
+    }
+
+    void Prepare(HdTaskContext* ctx, HdRenderIndex* renderIndex) override
+    {
+    }
+
+    void Execute(HdTaskContext* ctx) override
+    {
+    }
+
+    const TfTokenVector& GetRenderTags() const override
+    {
+        return _renderTags;
+    }
+
+private:
+    HdRenderPassSharedPtr _renderPass;
+    TfTokenVector _renderTags;
 };
 
 bool
@@ -261,25 +460,21 @@ _CopyHydraPoints(const VtValue& value, std::vector<float>* points)
 }
 
 std::vector<int>
-_TriangulateHydraTopology(const HdMeshTopology& topology)
+_TriangulateHydraTopology(
+    const HdMeshTopology& topology,
+    SdfPath const& id)
 {
     std::vector<int> triangles;
-    const VtIntArray& counts = topology.GetFaceVertexCounts();
-    const VtIntArray& indices = topology.GetFaceVertexIndices();
+    VtVec3iArray triangleIndices;
+    VtIntArray primitiveParams;
+    HdMeshUtil meshUtil(&topology, id);
+    meshUtil.ComputeTriangleIndices(&triangleIndices, &primitiveParams);
 
-    size_t cursor = 0;
-    for (int count : counts) {
-        if (count < 3 || cursor + static_cast<size_t>(count) > indices.size()) {
-            cursor += std::max(count, 0);
-            continue;
-        }
-
-        for (int i = 1; i + 1 < count; ++i) {
-            triangles.push_back(indices[cursor]);
-            triangles.push_back(indices[cursor + i]);
-            triangles.push_back(indices[cursor + i + 1]);
-        }
-        cursor += count;
+    triangles.reserve(triangleIndices.size() * 3);
+    for (const GfVec3i& triangle : triangleIndices) {
+        triangles.push_back(triangle[0]);
+        triangles.push_back(triangle[1]);
+        triangles.push_back(triangle[2]);
     }
 
     return triangles;
@@ -405,6 +600,13 @@ public:
 
         HydraMeshUpdate update;
         if (_BuildHydraMeshUpdateFromSceneDelegate(delegate, id, &update)) {
+            update.dirtyBits = static_cast<unsigned>(*dirtyBits);
+            update.dirtyPoints =
+                HdChangeTracker::IsPrimvarDirty(*dirtyBits, id, HdTokens->points);
+            update.dirtyTransform =
+                HdChangeTracker::IsTransformDirty(*dirtyBits, id);
+            update.dirtyTopology =
+                HdChangeTracker::IsTopologyDirty(*dirtyBits, id);
             _collector->Record(std::move(update));
         }
 
@@ -478,9 +680,6 @@ public:
     {
         static const TfTokenVector tokens = {
             HdPrimTypeTokens->camera,
-            HdPrimTypeTokens->coordSys,
-            HdPrimTypeTokens->domeLight,
-            HdPrimTypeTokens->extComputation,
             HdPrimTypeTokens->material
         };
         return tokens;
@@ -597,6 +796,271 @@ private:
     WebViewHydraMeshCollector* _collector;
 };
 
+emscripten::val
+_Float32View(const std::vector<float>& values);
+
+emscripten::val
+_Int32View(const std::vector<int>& values);
+
+std::vector<float>
+_MatrixVector(const GfMatrix4d& matrix);
+
+UsdSkelCache*
+_GetOrPopulateSkelCache(const std::string& path, const UsdStageRefPtr& stage);
+
+UsdSkelSkeleton
+_FindSkeletonForSkinnedPrim(const std::string& stagePath, const UsdPrim& prim);
+
+bool
+_ExtractSkinnedControlPoints(
+    const UsdGeomMesh& mesh,
+    std::vector<float>* points,
+    UsdTimeCode timeCode,
+    const UsdSkelCache* skelCache,
+    const UsdSkelSkeleton& skel,
+    UsdGeomXformCache* xformCache);
+
+static VtArray<GfVec3f>
+_GetMeshPointsAsFloat(const UsdGeomMesh& mesh, UsdTimeCode timeCode);
+
+class ReferenceHydraMesh final : public HdMesh
+{
+public:
+    ReferenceHydraMesh(
+        SdfPath const& id,
+        emscripten::val jsPrim)
+        : HdMesh(id)
+        , _jsPrim(std::move(jsPrim))
+    {
+    }
+
+    void Sync(
+        HdSceneDelegate* delegate,
+        HdRenderParam* renderParam,
+        HdDirtyBits* dirtyBits,
+        TfToken const& reprToken) override
+    {
+        const SdfPath& id = GetId();
+        if (!delegate || !dirtyBits || *dirtyBits == HdChangeTracker::Clean) {
+            return;
+        }
+
+        const bool dirtyPoints =
+            HdChangeTracker::IsPrimvarDirty(*dirtyBits, id, HdTokens->points);
+        const bool dirtyTransform =
+            HdChangeTracker::IsTransformDirty(*dirtyBits, id);
+        const bool dirtyTopology =
+            HdChangeTracker::IsTopologyDirty(*dirtyBits, id);
+
+        if (dirtyPoints) {
+            _CopyHydraPoints(delegate->Get(id, HdTokens->points), &_points);
+        }
+
+        if (dirtyTopology || !_sentTopology) {
+            _topology = delegate->GetMeshTopology(id);
+        }
+
+        if (!_sentTopology && _topology.GetFaceVertexCounts().empty()) {
+            _topology = delegate->GetMeshTopology(id);
+        }
+
+        if (_points.empty()) {
+            _CopyHydraPoints(delegate->Get(id, HdTokens->points), &_points);
+        }
+
+        if (!_topology.GetFaceVertexCounts().empty() &&
+            !_jsPrim["updateIndices"].isUndefined()) {
+            std::vector<int> indices = _TriangulateHydraTopology(_topology, id);
+            if (!indices.empty()) {
+                _jsPrim.call<void>("updateIndices", _Int32View(indices));
+                _sentTopology = true;
+            }
+        }
+
+        if (!_points.empty() && !_jsPrim["updatePoints"].isUndefined()) {
+            _jsPrim.call<void>("updatePoints", _Float32View(_points));
+            _sentPoints = true;
+        }
+
+        if (!_topology.GetFaceVertexCounts().empty() &&
+            !_jsPrim["updateFaceVertexCounts"].isUndefined()) {
+            const VtIntArray& counts = _topology.GetFaceVertexCounts();
+            if (!counts.empty()) {
+                _jsPrim.call<void>(
+                    "updateFaceVertexCounts",
+                    emscripten::val(
+                        emscripten::typed_memory_view(
+                            counts.size(),
+                            counts.cdata())));
+            }
+        }
+
+        if ((dirtyTransform || !_sentTransform) &&
+            !_jsPrim["setTransform"].isUndefined()) {
+            std::vector<float> matrix = _MatrixVector(delegate->GetTransform(id));
+            _jsPrim.call<void>("setTransform", _Float32View(matrix));
+            _sentTransform = true;
+        }
+
+        *dirtyBits &= ~HdChangeTracker::AllSceneDirtyBits;
+    }
+
+    HdDirtyBits GetInitialDirtyBitsMask() const override
+    {
+        return HdChangeTracker::AllSceneDirtyBits & ~HdChangeTracker::Varying;
+    }
+
+protected:
+    HdDirtyBits _PropagateDirtyBits(HdDirtyBits bits) const override
+    {
+        return bits;
+    }
+
+    void _InitRepr(TfToken const& reprToken, HdDirtyBits* dirtyBits) override
+    {
+        auto it = std::find_if(
+            _reprs.begin(),
+            _reprs.end(),
+            _ReprComparator(reprToken));
+        if (it == _reprs.end()) {
+            _reprs.emplace_back(reprToken, HdReprSharedPtr());
+        }
+    }
+
+private:
+    emscripten::val _jsPrim;
+    std::vector<float> _points;
+    HdMeshTopology _topology;
+    bool _sentTopology = false;
+    bool _sentPoints = false;
+    bool _sentTransform = false;
+};
+
+class ReferenceHydraRenderDelegate final : public HdRenderDelegate
+{
+public:
+    explicit ReferenceHydraRenderDelegate(emscripten::val renderInterface)
+        : _renderInterface(std::move(renderInterface))
+    {
+    }
+
+    const TfTokenVector& GetSupportedRprimTypes() const override
+    {
+        static const TfTokenVector tokens = {
+            HdPrimTypeTokens->mesh,
+            HdPrimTypeTokens->points
+        };
+        return tokens;
+    }
+
+    const TfTokenVector& GetSupportedSprimTypes() const override
+    {
+        static const TfTokenVector tokens = {
+            HdPrimTypeTokens->camera,
+            HdPrimTypeTokens->material
+        };
+        return tokens;
+    }
+
+    const TfTokenVector& GetSupportedBprimTypes() const override
+    {
+        static const TfTokenVector tokens;
+        return tokens;
+    }
+
+    HdRenderParam* GetRenderParam() const override
+    {
+        return nullptr;
+    }
+
+    HdResourceRegistrySharedPtr GetResourceRegistry() const override
+    {
+        static HdResourceRegistrySharedPtr registry(new HdResourceRegistry);
+        return registry;
+    }
+
+    HdRenderPassSharedPtr CreateRenderPass(
+        HdRenderIndex* index,
+        HdRprimCollection const& collection) override
+    {
+        return HdRenderPassSharedPtr();
+    }
+
+    HdInstancer* CreateInstancer(
+        HdSceneDelegate* delegate,
+        SdfPath const& id) override
+    {
+        return new HdInstancer(delegate, id);
+    }
+
+    void DestroyInstancer(HdInstancer* instancer) override
+    {
+        delete instancer;
+    }
+
+    HdRprim* CreateRprim(TfToken const& typeId, SdfPath const& rprimId) override
+    {
+        if ((typeId != HdPrimTypeTokens->mesh &&
+             typeId != HdPrimTypeTokens->points) ||
+            _renderInterface["createRPrim"].isUndefined()) {
+            return nullptr;
+        }
+        emscripten::val jsPrim = _renderInterface.call<emscripten::val>(
+            "createRPrim",
+            typeId.GetString(),
+            rprimId.GetString());
+        return new ReferenceHydraMesh(rprimId, std::move(jsPrim));
+    }
+
+    void DestroyRprim(HdRprim* rprim) override
+    {
+        delete rprim;
+    }
+
+    HdSprim* CreateSprim(TfToken const& typeId, SdfPath const& sprimId) override
+    {
+        if (typeId == HdPrimTypeTokens->material) {
+            return new WebViewHydraSprim<HdMaterial>(sprimId);
+        }
+        if (typeId == HdPrimTypeTokens->camera) {
+            return new WebViewHydraSprim<HdCamera>(sprimId);
+        }
+        return nullptr;
+    }
+
+    HdSprim* CreateFallbackSprim(TfToken const& typeId) override
+    {
+        return CreateSprim(typeId, SdfPath::EmptyPath());
+    }
+
+    void DestroySprim(HdSprim* sprim) override
+    {
+        delete sprim;
+    }
+
+    HdBprim* CreateBprim(TfToken const& typeId, SdfPath const& bprimId) override
+    {
+        return nullptr;
+    }
+
+    HdBprim* CreateFallbackBprim(TfToken const& typeId) override
+    {
+        return nullptr;
+    }
+
+    void DestroyBprim(HdBprim* bprim) override
+    {
+        delete bprim;
+    }
+
+    void CommitResources(HdChangeTracker* tracker) override
+    {
+    }
+
+private:
+    emscripten::val _renderInterface;
+};
+
 bool
 _BuildHydraMeshUpdateFromSceneDelegate(
     HdSceneDelegate* delegate,
@@ -612,7 +1076,7 @@ _BuildHydraMeshUpdateFromSceneDelegate(
     update->name = id.GetName();
     update->matrix = delegate->GetTransform(id);
     update->triangleIndices =
-        _TriangulateHydraTopology(delegate->GetMeshTopology(id));
+        _TriangulateHydraTopology(delegate->GetMeshTopology(id), id);
 
     VtValue pointsValue = delegate->Get(id, HdTokens->points);
     HdExtComputationPrimvarDescriptorVector pointsComputations;
@@ -878,7 +1342,7 @@ _SyncHydraRenderIndexGeometry(HdRenderIndex* renderIndex)
 
     HdRprimCollection collection(
         HdTokens->geometry,
-        HdReprSelector(HdReprTokens->smoothHull));
+        HdReprSelector(HdReprTokens->refined));
     renderIndex->EnqueueCollectionToSync(collection);
 
     HdTaskSharedPtrVector tasks;
@@ -894,58 +1358,42 @@ struct HydraAnimationDriver
         , renderDelegate(&collector)
     {
         if (this->stage) {
-            UsdImagingCreateSceneIndicesInfo createInfo;
-            createInfo.stage = this->stage;
-            sceneIndices = UsdImagingCreateSceneIndices(createInfo);
+            // Match the working web viewers' animation shape: a persistent
+            // legacy UsdImagingDelegate drives a custom Hydra render delegate.
+            // The scene-index adapter path is useful for diagnostics, but its
+            // ExtComputation bridge has been observed to return static skinned
+            // inputs after time changes in this WASM build.
+            renderIndex.reset(HdRenderIndex::New(
+                &renderDelegate,
+                HdDriverVector()));
+            imagingDelegate = std::make_unique<UsdImagingDelegate>(
+                renderIndex.get(),
+                SdfPath::AbsoluteRootPath());
+            imagingDelegate->SetRefineLevelFallback(0);
 
-            if (sceneIndices.finalSceneIndex) {
-                // Older USDZs can carry skel relationships without enough
-                // authored BindingAPI metadata for UsdSkel's scene-index
-                // resolver to see them. Repair that metadata in-scene-index,
-                // without editing the stage, before appending the resolver.
-                sceneIndices.finalSceneIndex =
-                    WebViewSkelBindingRepairSceneIndex::New(
-                        sceneIndices.finalSceneIndex,
-                        this->stage,
-                        this->stagePath);
-
-                // In the static WASM build the UsdSkel scene-index plugin can
-                // be linked but absent from UsdImagingSceneIndexPlugin's
-                // discovery list. Append it explicitly so skinned meshes gain
-                // their extComputationPrimvars.points data source.
-                UsdSkelImagingResolvingSceneIndexPlugin skelResolvingPlugin;
-                sceneIndices.finalSceneIndex =
-                    skelResolvingPlugin.AppendSceneIndex(
-                        sceneIndices.finalSceneIndex);
-                renderIndex.reset(HdRenderIndex::New(
-                    &renderDelegate,
-                    HdDriverVector(),
-                    sceneIndices.finalSceneIndex));
+            // Give legacy UsdSkelImagingSkelRootAdapter first claim on
+            // skinned meshes before the general population traversal reaches
+            // the same mesh prims via their regular UsdGeom adapters.
+            bool populatedRoot = false;
+            for (const UsdPrim& prim : UsdPrimRange(this->stage->GetPseudoRoot())) {
+                if (prim.IsA<UsdSkelRoot>()) {
+                    imagingDelegate->Populate(prim);
+                    populatedRoot = true;
+                }
             }
+            if (!populatedRoot) {
+                imagingDelegate->Populate(this->stage->GetPseudoRoot());
+            }
+            imagingDelegate->ApplyPendingUpdates();
 
-            if (!renderIndex) {
-                renderIndex.reset(HdRenderIndex::New(
-                    &renderDelegate,
-                    HdDriverVector()));
-                imagingDelegate = std::make_unique<UsdImagingDelegate>(
+            collection = HdRprimCollection(
+                HdTokens->geometry,
+                HdReprSelector(HdReprTokens->refined));
+            renderTags.push_back(HdRenderTagTokens->geometry);
+            geometryPass = HdRenderPassSharedPtr(
+                new Hd_UnitTestNullRenderPass(
                     renderIndex.get(),
-                    SdfPath::AbsoluteRootPath());
-
-                // Give legacy UsdSkelImagingSkelRootAdapter first claim on
-                // skinned meshes before the general population traversal reaches
-                // the same mesh prims via their regular UsdGeom adapters.
-                bool populatedRoot = false;
-                for (const UsdPrim& prim : UsdPrimRange(this->stage->GetPseudoRoot())) {
-                    if (prim.IsA<UsdSkelRoot>()) {
-                        imagingDelegate->Populate(prim);
-                        populatedRoot = true;
-                    }
-                }
-                if (!populatedRoot) {
-                    imagingDelegate->Populate(this->stage->GetPseudoRoot());
-                }
-                imagingDelegate->ApplyPendingUpdates();
-            }
+                    collection));
         }
     }
 
@@ -954,12 +1402,122 @@ struct HydraAnimationDriver
     UsdImagingSceneIndices sceneIndices;
     WebViewHydraMeshCollector collector;
     WebViewHydraRenderDelegate renderDelegate;
+    HdEngine engine;
+    HdRprimCollection collection;
+    TfTokenVector renderTags;
+    HdRenderPassSharedPtr geometryPass;
     std::unique_ptr<HdRenderIndex> renderIndex;
     std::unique_ptr<UsdImagingDelegate> imagingDelegate;
 };
 
+class ReferenceHydraSyncDriver
+{
+public:
+    ReferenceHydraSyncDriver(std::string stagePath, emscripten::val renderInterface)
+        : _stagePath(std::move(stagePath))
+        , _renderDelegate(std::move(renderInterface))
+    {
+        _stage = UsdStage::Open(_stagePath);
+        if (!_stage) {
+            return;
+        }
+
+        _startTimeCode = _stage->GetStartTimeCode();
+        _endTimeCode = _stage->GetEndTimeCode();
+        _timeCodesPerSecond = _stage->GetTimeCodesPerSecond();
+        _timeCode = _startTimeCode;
+
+        _renderIndex.reset(HdRenderIndex::New(
+            &_renderDelegate,
+            HdDriverVector()));
+        _imagingDelegate = std::make_unique<UsdImagingDelegate>(
+            _renderIndex.get(),
+            SdfPath::AbsoluteRootPath());
+        _imagingDelegate->SetRefineLevelFallback(0);
+
+        UsdSkelBakeSkinning(_stage->Traverse());
+
+        _imagingDelegate->Populate(_stage->GetPseudoRoot());
+
+        _collection = HdRprimCollection(
+            HdTokens->geometry,
+            HdReprSelector(HdReprTokens->refined));
+        _renderTags.push_back(HdRenderTagTokens->geometry);
+        _geometryPass = HdRenderPassSharedPtr(
+            new Hd_UnitTestNullRenderPass(
+                _renderIndex.get(),
+                _collection));
+        _imagingDelegate->ApplyPendingUpdates();
+    }
+
+    void SetTime(double timeCode)
+    {
+        _timeCode = timeCode;
+        if (_imagingDelegate) {
+            _imagingDelegate->SetTime(UsdTimeCode(timeCode));
+            HdChangeTracker& tracker = _renderIndex->GetChangeTracker();
+            for (const SdfPath& primPath : _renderIndex->GetRprimIds()) {
+                tracker.MarkRprimDirty(
+                    primPath,
+                    HdChangeTracker::DirtyTransform);
+            }
+        }
+    }
+
+    void Draw()
+    {
+        if (!_renderIndex || !_imagingDelegate) {
+            return;
+        }
+
+        _imagingDelegate->ApplyPendingUpdates();
+        HdTaskSharedPtrVector tasks = {
+            std::make_shared<WebViewHydraSyncTask>(
+                _geometryPass,
+                _renderTags)
+        };
+        _engine.Execute(&_imagingDelegate->GetRenderIndex(), &tasks);
+    }
+
+    double GetStartTimeCode() const
+    {
+        return _startTimeCode;
+    }
+
+    double GetEndTimeCode() const
+    {
+        return _endTimeCode;
+    }
+
+    double GetTimeCodesPerSecond() const
+    {
+        return _timeCodesPerSecond;
+    }
+
+    bool IsValid() const
+    {
+        return _stage && _renderIndex && _imagingDelegate;
+    }
+
+private:
+    std::string _stagePath;
+    UsdStageRefPtr _stage;
+    ReferenceHydraRenderDelegate _renderDelegate;
+    HdEngine _engine;
+    HdRprimCollection _collection;
+    TfTokenVector _renderTags;
+    HdRenderPassSharedPtr _geometryPass;
+    std::unique_ptr<HdRenderIndex> _renderIndex;
+    std::unique_ptr<UsdImagingDelegate> _imagingDelegate;
+    double _timeCode = 0.0;
+    double _startTimeCode = 0.0;
+    double _endTimeCode = 0.0;
+    double _timeCodesPerSecond = 24.0;
+};
+
 std::unordered_map<std::string, std::unique_ptr<HydraAnimationDriver>>
     g_hydraAnimationDrivers;
+std::unordered_map<std::string, std::string> g_lastSkelBindingOverlayContents;
 
 int
 _CountPrims(const UsdStageRefPtr& stage)
@@ -1017,8 +1575,13 @@ _ForceUsdSkelImagingStaticRegistration()
 void
 InitializeRuntime()
 {
+    static std::atomic<bool> initialized{false};
+    if (initialized.exchange(true)) {
+        return;
+    }
+
     _ForceUsdSkelImagingStaticRegistration();
-    PlugRegistry::GetInstance().RegisterPlugins("/usd/plugInfo.json");
+    PlugRegistry::GetInstance().RegisterPlugins("/usd");
 
     const TfType resolverType = TfType::FindByName("Sdf_UsdzResolver");
     if (resolverType.IsUnknown() ||
@@ -1072,6 +1635,39 @@ _Float32Array(const std::vector<float>& values)
     }
     return emscripten::val::global("Float32Array")
         .new_(emscripten::typed_memory_view(values.size(), values.data()));
+}
+
+emscripten::val
+_Float32View(const std::vector<float>& values)
+{
+    if (values.empty()) {
+        return emscripten::val::global("Float32Array").new_(0);
+    }
+    return emscripten::val(
+        emscripten::typed_memory_view(values.size(), values.data()));
+}
+
+emscripten::val
+_Int32View(const std::vector<int>& values)
+{
+    if (values.empty()) {
+        return emscripten::val::global("Int32Array").new_(0);
+    }
+    return emscripten::val(
+        emscripten::typed_memory_view(values.size(), values.data()));
+}
+
+std::vector<float>
+_MatrixVector(const GfMatrix4d& matrix)
+{
+    std::vector<float> values;
+    values.reserve(16);
+    for (size_t row = 0; row < 4; ++row) {
+        for (size_t column = 0; column < 4; ++column) {
+            values.push_back(static_cast<float>(matrix[row][column]));
+        }
+    }
+    return values;
 }
 
 bool
@@ -1431,6 +2027,10 @@ _AuthorLegacySkelBindingTargets(
     if (!sessionLayer) {
         return 0;
     }
+    sessionLayer->SetPermissionToEdit(true);
+    if (diagnostics) {
+        diagnostics->sessionLayerIdentifier = sessionLayer->GetIdentifier();
+    }
 
     // Populate a local skel cache to find skinning queries via primvar inspection.
     // GetSkinningQuery works from joint-indices/weights primvars and does not
@@ -1477,13 +2077,14 @@ _AuthorLegacySkelBindingTargets(
                 ++diagnostics->animationTargets;
             }
 
-            // Apply the API schema so the relationship is properly composed.
-            if (!prim.HasAPI<UsdSkelBindingAPI>()) {
-                UsdSkelBindingAPI::Apply(prim);
-            }
-            UsdRelationship rel =
-                UsdSkelBindingAPI(prim).GetAnimationSourceRel();
-            if (rel && rel.AddTarget(animation.GetPath())) {
+            SdfRelationshipSpecHandle relSpec =
+                _EnsureRelationshipSpecInLayer(
+                    sessionLayer,
+                    prim.GetPath(),
+                    UsdSkelTokens->skelAnimationSource,
+                    diagnostics);
+            if (relSpec) {
+                relSpec->GetTargetPathList().Prepend(animation.GetPath());
                 ++authoredCount;
                 if (diagnostics) {
                     ++diagnostics->relationshipSpecs;
@@ -1530,16 +2131,14 @@ _AuthorLegacySkelBindingTargets(
             ++diagnostics->meshInferredSkeletons;
         }
 
-        // Apply the API schema — this stamps apiSchemas = ["SkelBindingAPI"] in the
-        // session layer override for this prim, making HasAPI<UsdSkelBindingAPI>()
-        // return true in ComputeSkelBindings.
-        UsdSkelBindingAPI binding = UsdSkelBindingAPI::Apply(prim);
-        if (!binding) {
-            continue;
-        }
-
-        UsdRelationship rel = binding.GetSkeletonRel();
-        if (rel && rel.AddTarget(skeleton.GetPath())) {
+        SdfRelationshipSpecHandle relSpec =
+            _EnsureRelationshipSpecInLayer(
+                sessionLayer,
+                prim.GetPath(),
+                UsdSkelTokens->skelSkeleton,
+                diagnostics);
+        if (relSpec) {
+            relSpec->GetTargetPathList().Prepend(skeleton.GetPath());
             ++authoredCount;
             if (diagnostics) {
                 ++diagnostics->relationshipSpecs;
@@ -1548,6 +2147,243 @@ _AuthorLegacySkelBindingTargets(
     }
 
     return authoredCount;
+}
+
+int
+_AuthorInferredSkelBindingTargetsToLayer(
+    const UsdStageRefPtr& sourceStage,
+    const SdfLayerHandle& targetLayer,
+    LegacySkelBindingAuthoringDiagnostics* diagnostics)
+{
+    if (!sourceStage || !targetLayer) {
+        return 0;
+    }
+    if (diagnostics) {
+        diagnostics->sessionLayerIdentifier = targetLayer->GetIdentifier();
+    }
+
+    UsdSkelCache skinningQueryCache;
+    for (const UsdPrim& prim : UsdPrimRange(sourceStage->GetPseudoRoot())) {
+        if (prim.IsA<UsdSkelRoot>()) {
+            skinningQueryCache.Populate(
+                UsdSkelRoot(prim),
+                UsdTraverseInstanceProxies());
+        }
+    }
+
+    int authoredCount = 0;
+    static const TfToken kSkeletonType("Skeleton");
+    for (const UsdPrim& prim : UsdPrimRange(sourceStage->GetPseudoRoot())) {
+        if (prim.GetTypeName() == kSkeletonType) {
+            if (diagnostics) {
+                ++diagnostics->skeletonPrims;
+            }
+
+            UsdPrim animation = _InferAnimationForSkeleton(prim);
+            if (!animation) {
+                continue;
+            }
+            if (diagnostics) {
+                ++diagnostics->animationTargets;
+            }
+
+            SdfRelationshipSpecHandle relSpec =
+                _EnsureRelationshipSpecInLayer(
+                    targetLayer,
+                    prim.GetPath(),
+                    UsdSkelTokens->skelAnimationSource,
+                    diagnostics);
+            if (relSpec) {
+                relSpec->GetTargetPathList().Prepend(animation.GetPath());
+                ++authoredCount;
+                if (diagnostics) {
+                    ++diagnostics->relationshipSpecs;
+                }
+            }
+            continue;
+        }
+
+        if (!prim.IsA<UsdGeomMesh>()) {
+            continue;
+        }
+        if (diagnostics) {
+            ++diagnostics->meshPrims;
+        }
+        if (!skinningQueryCache.GetSkinningQuery(prim)) {
+            continue;
+        }
+        if (diagnostics) {
+            ++diagnostics->meshSkinningQueries;
+        }
+
+        UsdPrim skeleton = _InferSkeletonForSkelBoundPrim(prim);
+        if (!skeleton) {
+            continue;
+        }
+        if (diagnostics) {
+            ++diagnostics->meshInferredSkeletons;
+        }
+
+        SdfRelationshipSpecHandle relSpec =
+            _EnsureRelationshipSpecInLayer(
+                targetLayer,
+                prim.GetPath(),
+                UsdSkelTokens->skelSkeleton,
+                diagnostics);
+        if (relSpec) {
+            relSpec->GetTargetPathList().Prepend(skeleton.GetPath());
+            ++authoredCount;
+            if (diagnostics) {
+                ++diagnostics->relationshipSpecs;
+            }
+        }
+    }
+
+    return authoredCount;
+}
+
+std::string
+_BuildInferredSkelBindingOverlayUsda(
+    const std::string& stagePath,
+    const UsdStageRefPtr& sourceStage,
+    LegacySkelBindingAuthoringDiagnostics* diagnostics,
+    int* authoredCount)
+{
+    if (authoredCount) {
+        *authoredCount = 0;
+    }
+    if (!sourceStage) {
+        return std::string();
+    }
+
+    UsdSkelCache skinningQueryCache;
+    for (const UsdPrim& prim : UsdPrimRange(sourceStage->GetPseudoRoot())) {
+        if (prim.IsA<UsdSkelRoot>()) {
+            skinningQueryCache.Populate(
+                UsdSkelRoot(prim),
+                UsdTraverseInstanceProxies());
+        }
+    }
+
+    UsdaOverlayPrim root;
+    int localAuthoredCount = 0;
+    static const TfToken kSkeletonType("Skeleton");
+    for (const UsdPrim& prim : UsdPrimRange(sourceStage->GetPseudoRoot())) {
+        if (prim.GetTypeName() == kSkeletonType) {
+            if (diagnostics) {
+                ++diagnostics->skeletonPrims;
+            }
+
+            UsdPrim animation = _InferAnimationForSkeleton(prim);
+            if (!animation) {
+                continue;
+            }
+            if (diagnostics) {
+                ++diagnostics->animationTargets;
+            }
+
+            _AddUsdaOverlayRelationship(
+                &root,
+                prim.GetPath(),
+                UsdSkelTokens->skelAnimationSource.GetString(),
+                animation.GetPath());
+            ++localAuthoredCount;
+            if (diagnostics) {
+                ++diagnostics->relationshipSpecs;
+            }
+            continue;
+        }
+
+        if (!prim.IsA<UsdGeomMesh>()) {
+            continue;
+        }
+        if (diagnostics) {
+            ++diagnostics->meshPrims;
+        }
+        if (!skinningQueryCache.GetSkinningQuery(prim)) {
+            continue;
+        }
+        if (diagnostics) {
+            ++diagnostics->meshSkinningQueries;
+        }
+
+        UsdPrim skeleton = _InferSkeletonForSkelBoundPrim(prim);
+        if (!skeleton) {
+            continue;
+        }
+        if (diagnostics) {
+            ++diagnostics->meshInferredSkeletons;
+        }
+
+        _AddUsdaOverlayRelationship(
+            &root,
+            prim.GetPath(),
+            UsdSkelTokens->skelSkeleton.GetString(),
+            skeleton.GetPath());
+        ++localAuthoredCount;
+        if (diagnostics) {
+            ++diagnostics->relationshipSpecs;
+        }
+    }
+
+    if (localAuthoredCount <= 0) {
+        return std::string();
+    }
+
+    std::ostringstream oss;
+    oss << "#usda 1.0\n";
+    oss << "(\n";
+    oss << "    subLayers = [\n";
+    oss << "        @" << _EscapeUsdaAssetPath(stagePath) << "@\n";
+    oss << "    ]\n";
+    oss << ")\n\n";
+    for (const auto& child : root.children) {
+        _WriteUsdaOverlayPrim(oss, child.second, child.first, 0);
+    }
+
+    if (authoredCount) {
+        *authoredCount = localAuthoredCount;
+    }
+    return oss.str();
+}
+
+UsdStageRefPtr
+_CreateSkelBindingOverlayStage(
+    const std::string& stagePath,
+    const UsdStageRefPtr& sourceStage,
+    LegacySkelBindingAuthoringDiagnostics* diagnostics)
+{
+    if (!sourceStage) {
+        return nullptr;
+    }
+
+    SdfLayerRefPtr overlayLayer =
+        SdfLayer::CreateAnonymous("usd-webview-skel-binding-overlay.usda");
+    if (!overlayLayer) {
+        return nullptr;
+    }
+    overlayLayer->SetPermissionToEdit(true);
+
+    int authoredCount = 0;
+    const std::string overlayContents =
+        _BuildInferredSkelBindingOverlayUsda(
+            stagePath,
+            sourceStage,
+            diagnostics,
+            &authoredCount);
+    if (authoredCount <= 0) {
+        return nullptr;
+    }
+
+    if (!overlayLayer->ImportFromString(overlayContents)) {
+        if (diagnostics) {
+            diagnostics->firstRelationshipFailurePath =
+                "overlay ImportFromString failed";
+        }
+        return nullptr;
+    }
+    g_lastSkelBindingOverlayContents[stagePath] = overlayContents;
+    return UsdStage::Open(overlayLayer);
 }
 
 emscripten::val
@@ -2193,6 +3029,69 @@ _ExtractMeshPayload(
     return !payload->triangleIndices.empty();
 }
 
+bool
+_ExtractSkinnedControlPoints(
+    const UsdGeomMesh& mesh,
+    std::vector<float>* points,
+    UsdTimeCode timeCode,
+    const UsdSkelCache* skelCache,
+    const UsdSkelSkeleton& skel,
+    UsdGeomXformCache* xformCache)
+{
+    if (!points) {
+        return false;
+    }
+
+    VtArray<GfVec3f> usdPoints = _GetMeshPointsAsFloat(mesh, timeCode);
+    if (usdPoints.empty()) {
+        return false;
+    }
+
+    if (skelCache && skel && xformCache) {
+        const UsdPrim meshPrim = mesh.GetPrim();
+        if (UsdSkelSkinningQuery skinningQuery = skelCache->GetSkinningQuery(meshPrim)) {
+            if (UsdSkelSkeletonQuery skelQuery = skelCache->GetSkelQuery(skel)) {
+                VtArray<GfMatrix4d> skinningTransforms;
+                skelQuery.ComputeSkinningTransforms(&skinningTransforms, timeCode);
+                if (!skelQuery.GetAnimQuery()) {
+                    _ComputeInferredSkinningTransforms(
+                        skelCache,
+                        skel,
+                        timeCode,
+                        &skinningTransforms);
+                }
+                if (!skinningTransforms.empty()) {
+                    VtArray<GfVec3f> skinnedPoints = usdPoints;
+                if (skinningQuery.ComputeSkinnedPoints(
+                            skinningTransforms,
+                            &skinnedPoints,
+                            timeCode)) {
+                        const GfMatrix4d skelLocalToWorld =
+                            xformCache->GetLocalToWorldTransform(skel.GetPrim());
+                        const GfMatrix4d gprimLocalToWorld =
+                            xformCache->GetLocalToWorldTransform(meshPrim);
+                        const GfMatrix4d skelToGprim =
+                            skelLocalToWorld * gprimLocalToWorld.GetInverse();
+                        for (GfVec3f& point : skinnedPoints) {
+                            point = GfVec3f(skelToGprim.Transform(point));
+                        }
+                        usdPoints = skinnedPoints;
+                    }
+                }
+            }
+        }
+    }
+
+    points->clear();
+    points->reserve(usdPoints.size() * 3);
+    for (const GfVec3f& point : usdPoints) {
+        points->push_back(point[0]);
+        points->push_back(point[1]);
+        points->push_back(point[2]);
+    }
+    return !points->empty();
+}
+
 // Cache to avoid re-opening the stage on every ExtractTransformsAtTime call.
 // Key is the normalized stage path passed by the JS caller.
 static std::unordered_map<std::string, UsdStageRefPtr> g_stageCache;
@@ -2234,15 +3133,13 @@ _GetOrPopulateSkelCache(const std::string& path, const UsdStageRefPtr& stage)
 {
     if (g_authoredLegacySkelBindingTargets.find(path) ==
         g_authoredLegacySkelBindingTargets.end()) {
-        // The old experimental session-layer repair path tried to apply
-        // SkelBindingAPI and author inferred relationships for legacy files.
-        // On assets like hummingbird it fails to create prim specs for many
-        // mesh children, floods the console, and dirties the stage before the
-        // native Hydra/scene-index path can evaluate it. Keep the diagnostic
-        // counters stable, but do not author repairs here.
+        LegacySkelBindingAuthoringDiagnostics diagnostics;
+        if (stage && stage->GetSessionLayer()) {
+            diagnostics.sessionLayerIdentifier =
+                stage->GetSessionLayer()->GetIdentifier();
+        }
         g_authoredLegacySkelBindingTargets[path] = 0;
-        g_legacySkelBindingAuthoringDiagnostics[path] =
-            LegacySkelBindingAuthoringDiagnostics();
+        g_legacySkelBindingAuthoringDiagnostics[path] = diagnostics;
     }
 
     auto hasIt = g_stageHasSkelRoot.find(path);
@@ -2323,6 +3220,15 @@ GetRuntimeDiagnostics()
     result.set("hasUsdzFormatNoTarget", static_cast<bool>(SdfFileFormat::FindByExtension("file.usdz")));
     result.set("hasUsdzFormatById", static_cast<bool>(SdfFileFormat::FindById(TfToken("usdz"))));
     return result;
+}
+
+std::string
+GetLastSkelBindingOverlayContents(const std::string& stagePath)
+{
+    auto it = g_lastSkelBindingOverlayContents.find(stagePath);
+    return it == g_lastSkelBindingOverlayContents.end()
+        ? std::string()
+        : it->second;
 }
 
 emscripten::val
@@ -2448,6 +3354,10 @@ GetSkelDebugInfo(
         info.set("legacyAuthorMeshSkinningQueries", diag.meshSkinningQueries);
         info.set("legacyAuthorMeshInferredSkeletons", diag.meshInferredSkeletons);
         info.set("legacyAuthorRelationshipSpecs", diag.relationshipSpecs);
+        info.set("legacyAuthorRelationshipCreateAttempts", diag.relationshipCreateAttempts);
+        info.set("legacyAuthorRelationshipCreateFailures", diag.relationshipCreateFailures);
+        info.set("legacyAuthorFirstRelationshipFailurePath", diag.firstRelationshipFailurePath);
+        info.set("legacyAuthorSessionLayerIdentifier", diag.sessionLayerIdentifier);
     }
     int skelRootCount = 0;
     int skelBindingCount = 0;
@@ -3119,8 +4029,26 @@ _GetOrCreateHydraAnimationDriver(const std::string& stagePath)
     g_skelCache.erase(stagePath);
     g_stageHasSkelRoot.erase(stagePath);
     g_skinningSkeletonByStageAndPrim.erase(stagePath);
-    _GetOrPopulateSkelCache(stagePath, stage);
-    auto driver = std::make_unique<HydraAnimationDriver>(stagePath, stage);
+    UsdStageRefPtr driverStage = stage;
+    LegacySkelBindingAuthoringDiagnostics overlayDiagnostics;
+    if (UsdStageRefPtr overlayStage =
+            _CreateSkelBindingOverlayStage(
+                stagePath,
+                stage,
+                &overlayDiagnostics)) {
+        driverStage = overlayStage;
+        g_authoredLegacySkelBindingTargets[stagePath] =
+            overlayDiagnostics.relationshipSpecs;
+        g_legacySkelBindingAuthoringDiagnostics[stagePath] =
+            overlayDiagnostics;
+        g_skelCache.erase(stagePath);
+        g_stageHasSkelRoot.erase(stagePath);
+        g_skinningSkeletonByStageAndPrim.erase(stagePath);
+        _GetOrPopulateSkelCache(stagePath, driverStage);
+    }
+    auto driver = std::make_unique<HydraAnimationDriver>(
+        stagePath,
+        driverStage);
     HydraAnimationDriver* ptr = driver.get();
     g_hydraAnimationDrivers[stagePath] = std::move(driver);
     return ptr;
@@ -3247,6 +4175,7 @@ _SyncHydraDriverAtTime(HydraAnimationDriver* driver, double timeCode)
             UsdTimeCode(timeCode),
             /* forceDirtyingTimeDeps = */ true);
         driver->sceneIndices.stageSceneIndex->ApplyPendingUpdates();
+
         _SyncHydraRenderIndexGeometry(driver->renderIndex.get());
         if (driver->collector.updates.empty()) {
             for (const SdfPath& id : driver->renderIndex->GetRprimIds()) {
@@ -3264,8 +4193,38 @@ _SyncHydraDriverAtTime(HydraAnimationDriver* driver, double timeCode)
 
     if (driver->imagingDelegate) {
         driver->imagingDelegate->SetTime(UsdTimeCode(timeCode));
+
+        // Match the working web viewers: SetTime() dirties transforms, then
+        // Draw() lets UsdImaging/Hydra decide which primvars also changed.
+        HdChangeTracker& tracker =
+            driver->renderIndex->GetChangeTracker();
+        for (const SdfPath& primPath : driver->renderIndex->GetRprimIds()) {
+            tracker.MarkRprimDirty(
+                primPath,
+                HdChangeTracker::DirtyTransform);
+        }
+
         driver->imagingDelegate->ApplyPendingUpdates();
-        driver->imagingDelegate->SyncAll(true);
+        HdTaskSharedPtrVector tasks = {
+            std::make_shared<WebViewHydraSyncTask>(
+                driver->geometryPass,
+                driver->renderTags)
+        };
+        driver->engine.Execute(
+            &driver->imagingDelegate->GetRenderIndex(),
+            &tasks);
+    }
+
+    if (driver->collector.updates.empty()) {
+        for (const SdfPath& id : driver->renderIndex->GetRprimIds()) {
+            HydraMeshUpdate update;
+            if (_BuildHydraMeshUpdate(
+                    driver->renderIndex.get(),
+                    id,
+                    &update)) {
+                driver->collector.Record(std::move(update));
+            }
+        }
     }
 }
 
@@ -3280,39 +4239,12 @@ _HydraCollectorUpdatesToRenderableArray(
         return result;
     }
 
-    UsdSkelCache* skelCache = _GetOrPopulateSkelCache(stagePath, driver->stage);
-    UsdGeomXformCache xformCache{UsdTimeCode(timeCode)};
     size_t index = 0;
     for (auto& entry : driver->collector.updates) {
         HydraMeshUpdate& update = entry.second;
         UsdPrim prim = driver->stage->GetPrimAtPath(SdfPath(update.path));
         if (!prim || !prim.IsA<UsdGeomMesh>()) {
             continue;
-        }
-
-        if (!update.usedComputedPoints && skelCache) {
-            MeshPayload payload;
-            if (_ExtractMeshPayload(
-                    UsdGeomMesh(prim),
-                    &payload,
-                    UsdTimeCode(timeCode),
-                    skelCache,
-                    _FindSkeletonForSkinnedPrim(stagePath, prim),
-                    &xformCache)) {
-                update.usdSkelFallbackAvailable = true;
-            }
-        }
-
-        // For skinned meshes the ext computation points and the Hydra
-        // triangulated indices are already in the same vertex space.
-        // Expanding via USD face-vertex topology would mismatch if the
-        // skeleton adapter reorders vertices, so skip expansion here.
-        if (!update.usedComputedPoints) {
-            _ExpandHydraUpdateToFaceVertices(
-                driver->stage,
-                SdfPath(update.path),
-                UsdTimeCode(timeCode),
-                &update);
         }
 
         emscripten::val renderable = emscripten::val::object();
@@ -3327,6 +4259,10 @@ _HydraCollectorUpdatesToRenderableArray(
         renderable.set("pointComputationCount", update.pointComputationCount);
         renderable.set("sceneIndexChildCount", update.sceneIndexChildCount);
         renderable.set("sceneIndexHasSkelRoot", update.sceneIndexHasSkelRoot);
+        renderable.set("dirtyBits", static_cast<int>(update.dirtyBits));
+        renderable.set("dirtyPoints", update.dirtyPoints);
+        renderable.set("dirtyTransform", update.dirtyTransform);
+        renderable.set("dirtyTopology", update.dirtyTopology);
         renderable.set("sceneIndexSkeletonPath", update.sceneIndexSkeletonPath);
         renderable.set("sceneIndexAnimationSourcePath", update.sceneIndexAnimationSourcePath);
         renderable.set("sceneIndexAnimationPrimType", update.sceneIndexAnimationPrimType);
@@ -3430,6 +4366,9 @@ private:
 static int g_nextHydraSyncDriverId = 1;
 static std::unordered_map<int, std::unique_ptr<WebViewHydraSyncDriver>>
     g_hydraSyncDrivers;
+static int g_nextReferenceHydraDriverId = 1;
+static std::unordered_map<int, std::unique_ptr<ReferenceHydraSyncDriver>>
+    g_referenceHydraDrivers;
 
 int
 CreateHydraSyncDriver(const std::string& stagePath)
@@ -3492,9 +4431,83 @@ DrawHydraSyncDriver(int driverId)
     return emscripten::val::array();
 }
 
+int
+CreateReferenceHydraDriver(
+    const std::string& stagePath,
+    emscripten::val renderInterface)
+{
+    const int id = g_nextReferenceHydraDriverId++;
+    auto driver = std::make_unique<ReferenceHydraSyncDriver>(
+        stagePath,
+        std::move(renderInterface));
+    if (!driver->IsValid()) {
+        return 0;
+    }
+    g_referenceHydraDrivers[id] = std::move(driver);
+    return id;
+}
+
+void
+DeleteReferenceHydraDriver(int driverId)
+{
+    g_referenceHydraDrivers.erase(driverId);
+}
+
+void
+SetReferenceHydraDriverTime(int driverId, double timeCode)
+{
+    auto it = g_referenceHydraDrivers.find(driverId);
+    if (it != g_referenceHydraDrivers.end() && it->second) {
+        it->second->SetTime(timeCode);
+    }
+}
+
+void
+DrawReferenceHydraDriver(int driverId)
+{
+    auto it = g_referenceHydraDrivers.find(driverId);
+    if (it != g_referenceHydraDrivers.end() && it->second) {
+        it->second->Draw();
+    }
+}
+
+double
+GetReferenceHydraDriverStartTimeCode(int driverId)
+{
+    auto it = g_referenceHydraDrivers.find(driverId);
+    return it != g_referenceHydraDrivers.end() && it->second
+        ? it->second->GetStartTimeCode()
+        : 0.0;
+}
+
+double
+GetReferenceHydraDriverEndTimeCode(int driverId)
+{
+    auto it = g_referenceHydraDrivers.find(driverId);
+    return it != g_referenceHydraDrivers.end() && it->second
+        ? it->second->GetEndTimeCode()
+        : 0.0;
+}
+
+double
+GetReferenceHydraDriverTimeCodesPerSecond(int driverId)
+{
+    auto it = g_referenceHydraDrivers.find(driverId);
+    return it != g_referenceHydraDrivers.end() && it->second
+        ? it->second->GetTimeCodesPerSecond()
+        : 24.0;
+}
+
 EMSCRIPTEN_BINDINGS(usdWebViewBindings)
 {
     emscripten::function("InitializeRuntime", &InitializeRuntime);
+    emscripten::function("CreateReferenceHydraDriver", &CreateReferenceHydraDriver);
+    emscripten::function("DeleteReferenceHydraDriver", &DeleteReferenceHydraDriver);
+    emscripten::function("SetReferenceHydraDriverTime", &SetReferenceHydraDriverTime);
+    emscripten::function("DrawReferenceHydraDriver", &DrawReferenceHydraDriver);
+    emscripten::function("GetReferenceHydraDriverStartTimeCode", &GetReferenceHydraDriverStartTimeCode);
+    emscripten::function("GetReferenceHydraDriverEndTimeCode", &GetReferenceHydraDriverEndTimeCode);
+    emscripten::function("GetReferenceHydraDriverTimeCodesPerSecond", &GetReferenceHydraDriverTimeCodesPerSecond);
     emscripten::function("CreateHydraSyncDriver", &CreateHydraSyncDriver);
     emscripten::function("DeleteHydraSyncDriver", &DeleteHydraSyncDriver);
     emscripten::function("SetHydraSyncDriverTime", &SetHydraSyncDriverTime);
@@ -3503,6 +4516,7 @@ EMSCRIPTEN_BINDINGS(usdWebViewBindings)
     emscripten::function("GetHydraSyncDriverEndTimeCode", &GetHydraSyncDriverEndTimeCode);
     emscripten::function("GetHydraSyncDriverTimeCodesPerSecond", &GetHydraSyncDriverTimeCodesPerSecond);
     emscripten::function("GetRuntimeDiagnostics", &GetRuntimeDiagnostics);
+    emscripten::function("GetLastSkelBindingOverlayContents", &GetLastSkelBindingOverlayContents);
     emscripten::function("InspectPrimRelationships", &InspectPrimRelationships);
     emscripten::function("GetSkelDebugInfo", &GetSkelDebugInfo);
     emscripten::function("ExtractRenderables", &ExtractRenderables);

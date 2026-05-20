@@ -37,6 +37,16 @@ interface FrameAnim {
 export type NavigationMode = "orbital" | "game";
 export type ViewUpAxis = "y" | "z";
 
+export type ReferenceHydraRPrim = {
+  updatePoints: (points: Float32Array) => void;
+  updateIndices: (indices: Int32Array) => void;
+  setTransform: (matrix: Float32Array) => void;
+};
+
+export type ReferenceHydraRenderInterface = {
+  createRPrim: (type: string, id: string) => ReferenceHydraRPrim;
+};
+
 export class ThreeViewport {
   private readonly camera: PerspectiveCamera;
   private readonly controls: OrbitControls;
@@ -219,6 +229,79 @@ export class ThreeViewport {
     }
   }
 
+  createReferenceHydraRenderInterface(): ReferenceHydraRenderInterface {
+    console.info("[USD WebView] creating Three reference hydra render interface");
+    this.clearStage();
+    this.applyViewUpAxis();
+
+    return {
+      createRPrim: (_type: string, id: string): ReferenceHydraRPrim => {
+        console.info(`[USD WebView] direct hydra createRPrim type=${_type} id=${id}`);
+        const geometry = new BufferGeometry();
+        const material = new MeshPhysicalMaterial({
+          color: new Color(0xb8c4cf),
+          metalness: 0.05,
+          roughness: 0.55,
+          side: DoubleSide,
+        });
+        const mesh = new Mesh(geometry, material);
+        mesh.name = id.split("/").filter(Boolean).pop() || id;
+        mesh.matrixAutoUpdate = false;
+        this.stageRoot.add(mesh);
+        this.meshByPath.set(id, mesh);
+        this.pathByMesh.set(mesh, id);
+
+        let points = new Float32Array();
+        let indices = new Int32Array();
+        let pointUpdateCount = 0;
+        let lastPointFingerprint = "";
+
+        const updateGeometry = (): void => {
+          if (!points.length || !indices.length) return;
+          const positions = this.faceExpandAttr(points, indices, 3);
+          const positionAttr = geometry.attributes.position;
+          if (positionAttr && positionAttr.count * 3 === positions.length) {
+            (positionAttr.array as Float32Array).set(positions);
+            positionAttr.needsUpdate = true;
+          } else {
+            geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
+          }
+          this.recomputeGeometryNormals(geometry);
+          geometry.computeBoundingSphere();
+        };
+
+        return {
+          updatePoints: (nextPoints: Float32Array): void => {
+            points = new Float32Array(nextPoints);
+            pointUpdateCount += 1;
+            const fingerprint = this.geometryFingerprint(points);
+            if (pointUpdateCount <= 5 || fingerprint !== lastPointFingerprint) {
+              console.info(
+                `[USD WebView] direct hydra points ${id} update=${pointUpdateCount} values=${points.length} fingerprint=${fingerprint}`
+              );
+            }
+            lastPointFingerprint = fingerprint;
+            updateGeometry();
+          },
+          updateIndices: (nextIndices: Int32Array): void => {
+            indices = new Int32Array(nextIndices);
+            updateGeometry();
+          },
+          setTransform: (matrix: Float32Array): void => {
+            if (matrix.length !== 16) return;
+            mesh.matrix.set(...(Array.from(matrix) as Parameters<typeof mesh.matrix.set>));
+            mesh.matrix.transpose();
+            mesh.matrixAutoUpdate = false;
+          },
+        };
+      },
+    };
+  }
+
+  frameCurrentStage(): void {
+    this.frameStage();
+  }
+
   setSplatViewOptions(options: SplatViewOptions): void {
     this.splatRenderer.setOptions(options);
   }
@@ -381,8 +464,8 @@ export class ThreeViewport {
     }
   }
 
-  // Update only vertex positions on an existing geometry — reference pattern for
-  // animation frames. Preserves UVs, normals re-computed after update.
+  // Update only vertex positions on an existing geometry for animation frames.
+  // Preserves UVs, normals re-computed after update.
   // Falls back to full rebuild only when vertex count changes (topology shift).
   private updateGeometryPositions(geo: BufferGeometry, renderable: RenderableMesh): void {
     const pos = this.faceExpandAttr(renderable.points as number[], renderable.indices as number[], 3);
@@ -391,7 +474,7 @@ export class ThreeViewport {
       // Same vertex count — update in place, keep UVs untouched
       (posAttr.array as Float32Array).set(pos);
       posAttr.needsUpdate = true;
-      geo.computeVertexNormals();
+      this.recomputeGeometryNormals(geo);
     } else {
       // Topology changed — full rebuild, but salvage UVs from the old geometry
       const savedUv = geo.attributes.uv;
@@ -410,7 +493,11 @@ export class ThreeViewport {
 
   // Face-expand: for each index, copy `stride` floats from `data`. Matches the
   // reference ThreeJsRenderDelegate.updateOrder() pattern — no setIndex() needed.
-  private faceExpandAttr(data: number[], indices: number[], stride: number): Float32Array {
+  private faceExpandAttr(
+    data: ArrayLike<number>,
+    indices: ArrayLike<number>,
+    stride: number
+  ): Float32Array {
     const out = new Float32Array(indices.length * stride);
     for (let i = 0; i < indices.length; i++) {
       const s = indices[i] * stride;
@@ -428,11 +515,17 @@ export class ThreeViewport {
       geo.setAttribute("uv", uvAttr);
       geo.setAttribute("uv1", uvAttr.clone());
     }
-    geo.computeVertexNormals();
+    this.recomputeGeometryNormals(geo);
     return geo;
   }
 
-  private geometryFingerprint(points: number[]): string {
+  private recomputeGeometryNormals(geo: BufferGeometry): void {
+    geo.deleteAttribute("normal");
+    geo.computeVertexNormals();
+    geo.attributes.normal.needsUpdate = true;
+  }
+
+  private geometryFingerprint(points: ArrayLike<number>): string {
     if (!points.length) return "0";
     const samples = 8;
     const last = points.length - 1;

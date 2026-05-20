@@ -81,6 +81,7 @@ export type RenderableTexture = {
 export type StageLoadRequest = {
   files: File[];
   rootFile?: File;
+  referenceHydraRenderInterface?: unknown;
 };
 
 export type RenderableGaussianSplat = {
@@ -100,6 +101,7 @@ export type StageLoadResult = {
   summary: StageSummary | null;
   renderables?: RenderableMesh[];
   gaussianSplats?: RenderableGaussianSplat[];
+  usedReferenceHydraDriver?: boolean;
 };
 
 export type PrimTransform = {
@@ -136,6 +138,15 @@ export type HydraSyncDriver = {
   delete?: () => void;
 };
 
+export type ReferenceHydraDriver = {
+  SetTime: (timeCode: number) => void;
+  Draw: () => void;
+  GetStartTimeCode?: () => number;
+  GetEndTimeCode?: () => number;
+  GetTimeCodesPerSecond?: () => number;
+  delete?: () => void;
+};
+
 export type UsdWebViewBindings = {
   ready?: Promise<unknown>;
   createDataFile?: (path: string, data: Uint8Array) => void;
@@ -144,6 +155,7 @@ export type UsdWebViewBindings = {
   extractRenderablesAtTime?: (path: string, timeCode: number) => RenderableMesh[];
   extractHydraRenderablesAtTime?: (path: string, timeCode: number) => RenderableMesh[];
   createHydraSyncDriver?: (path: string) => HydraSyncDriver | null;
+  createReferenceHydraDriver?: (path: string, renderInterface: unknown) => ReferenceHydraDriver | null;
   extractTransformsAtTime?: (path: string, timeCode: number) => PrimTransform[];
   openStage?: (path: string) => Promise<StageSummary> | StageSummary;
   inspectPrimRelationships?: (stagePath: string, primPath: string) => unknown;
