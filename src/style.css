@@ -448,6 +448,56 @@ input {
   white-space: nowrap;
 }
 
+.attr-value-array-shell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  text-overflow: clip;
+}
+
+.attr-value-array {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 18%) transparent;
+}
+
+.attr-array-scroll {
+  flex: 0 0 auto;
+  inline-size: 20px;
+  block-size: 20px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 4px;
+  background: rgb(255 255 255 / 5%);
+  color: #cbd2d8;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+
+.attr-array-scroll:hover {
+  background: rgb(255 255 255 / 10%);
+  border-color: rgb(255 255 255 / 22%);
+}
+
+.attr-array-count {
+  flex: 0 0 auto;
+  color: #8a949c;
+}
+
+.attr-array-items {
+  flex: 0 0 auto;
+  font-family: ui-monospace, monospace;
+}
+
 .attr-variant-select {
   background: #111417;
   border: 1px solid rgb(255 255 255 / 18%);

@@ -136,6 +136,8 @@ export type PrimAttribute = {
   typeName: string;
   isAuthored: boolean;
   value?: string;
+  valueIsArray?: boolean;
+  valueElementCount?: number;
   variantOptions?: string[]; // defined when typeName === "variantSet"
 };
 

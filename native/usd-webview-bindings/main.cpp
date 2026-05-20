@@ -1685,6 +1685,60 @@ _MatrixVector(const GfMatrix4d& matrix)
     return values;
 }
 
+template <typename T>
+bool
+_FormatVtArrayPreview(
+    const VtValue& value,
+    std::string* result,
+    size_t maxElements = 512)
+{
+    if (!value.IsHolding<VtArray<T>>()) {
+        return false;
+    }
+
+    const VtArray<T>& array = value.UncheckedGet<VtArray<T>>();
+    std::ostringstream oss;
+    const size_t count = std::min(array.size(), maxElements);
+    for (size_t i = 0; i < count; ++i) {
+        if (i > 0) {
+            oss << ", ";
+        }
+        oss << array[i];
+    }
+    if (array.size() > count) {
+        if (count > 0) {
+            oss << ", ";
+        }
+        oss << "... " << (array.size() - count) << " more";
+    }
+    *result = oss.str();
+    return true;
+}
+
+bool
+_FormatVtArrayPreview(const VtValue& value, std::string* result)
+{
+    return
+        _FormatVtArrayPreview<int>(value, result) ||
+        _FormatVtArrayPreview<unsigned int>(value, result) ||
+        _FormatVtArrayPreview<int64_t>(value, result) ||
+        _FormatVtArrayPreview<uint64_t>(value, result) ||
+        _FormatVtArrayPreview<float>(value, result) ||
+        _FormatVtArrayPreview<double>(value, result) ||
+        _FormatVtArrayPreview<GfHalf>(value, result) ||
+        _FormatVtArrayPreview<GfVec2f>(value, result) ||
+        _FormatVtArrayPreview<GfVec3f>(value, result) ||
+        _FormatVtArrayPreview<GfVec4f>(value, result) ||
+        _FormatVtArrayPreview<GfVec2d>(value, result) ||
+        _FormatVtArrayPreview<GfVec3d>(value, result) ||
+        _FormatVtArrayPreview<GfVec4d>(value, result) ||
+        _FormatVtArrayPreview<GfVec2i>(value, result) ||
+        _FormatVtArrayPreview<GfVec3i>(value, result) ||
+        _FormatVtArrayPreview<GfVec4i>(value, result) ||
+        _FormatVtArrayPreview<TfToken>(value, result) ||
+        _FormatVtArrayPreview<std::string>(value, result);
+}
+
 bool
 _RelationshipNameLooksLikeMaterialBinding(const TfToken& name)
 {
@@ -3868,7 +3922,11 @@ GetPrimAttributes(const std::string& stagePath, const std::string& primPath)
         if (attr.Get(&value)) {
             std::string str;
             if (value.IsArrayValued() && value.GetArraySize() > 8) {
-                str = "[" + std::to_string(value.GetArraySize()) + " elements]";
+                item.set("valueIsArray", true);
+                item.set("valueElementCount", value.GetArraySize());
+                if (!_FormatVtArrayPreview(value, &str)) {
+                    str = "[" + std::to_string(value.GetArraySize()) + " elements]";
+                }
             } else {
                 std::ostringstream oss;
                 oss << value;
