@@ -4,15 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
+    "dev": "vite --host 127.0.0.1 --port 8000 --strictPort",
     "build": "tsc && vite build",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1 --port 8000 --strictPort"
   },
   "dependencies": {
-    "three": "^0.164.1"
+    "@sparkjsdev/spark": "^2.0.0",
+    "three": "^0.180.0"
   },
   "devDependencies": {
-    "@types/three": "^0.164.1",
+    "@types/three": "^0.180.0",
     "typescript": "^5.4.5",
     "vite": "^5.2.13"
   }

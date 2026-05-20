@@ -28,6 +28,7 @@ target_include_directories(usdWebViewBindingsModule PRIVATE ${USD_WEBVIEW_OPENUS
 target_link_options(usdWebViewBindingsModule PRIVATE
     --bind
     --no-entry
+    -O2
     "SHELL:-sMODULARIZE=1"
     "SHELL:-sEXPORT_ES6=1"
     "SHELL:-sEXPORT_NAME=createUsdWebViewBindingsModule"
@@ -36,15 +37,39 @@ target_link_options(usdWebViewBindingsModule PRIVATE
     "SHELL:-sFORCE_FILESYSTEM=1"
     "SHELL:-sEXPORTED_RUNTIME_METHODS=['FS_createPath','FS_createDataFile','FS_analyzePath','FS_unlink']"
     "SHELL:--embed-file ${pxr_DIR}/lib/usd@/usd"
+    "SHELL:-Wl,--whole-archive ${pxr_DIR}/lib/libusd_usdImaging.a ${pxr_DIR}/lib/libusd_usdSkelImaging.a -Wl,--no-whole-archive"
 )
 
 target_link_libraries(usdWebViewBindingsModule
     PRIVATE
+        usdSkelImaging
+        usdImaging
+        usdVolImaging
+        usdProcImaging
+        usdHydra
+        hdsi
+        hdGp
+        hdar
+        hd
+        hgi
+        hio
+        pxOsd
+        cameraUtil
+        sdrGlslfx
+        sdr
         usdGeom
         usdShade
+        usdSkel
+        usdLux
+        usdRender
         usdUtils
         usd
         sdf
+        pcp
+        plug
+        vt
+        gf
+        work
         ar
         tf
         arch
