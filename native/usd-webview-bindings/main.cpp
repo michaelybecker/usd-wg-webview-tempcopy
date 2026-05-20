@@ -2435,6 +2435,9 @@ _GetMimeType(const std::string& path)
     if (extension == "webp") {
         return "image/webp";
     }
+    if (extension == "exr") {
+        return "image/x-exr";
+    }
     if (extension == "ktx2") {
         return "image/ktx2";
     }

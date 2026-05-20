@@ -23,6 +23,7 @@ import {
   WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { EXRLoader } from "three/examples/jsm/loaders/EXRLoader.js";
 import type { PrimTransform, RenderableMesh, RenderableGaussianSplat, RenderableTexture, StageSummary } from "../usd/types";
 import { GaussianSplatRenderer, type SplatViewOptions } from "./GaussianSplatRenderer";
 
@@ -54,6 +55,7 @@ export class ThreeViewport {
   private readonly scene: Scene;
   private readonly stageRoot = new Group();
   private readonly textureLoader = new TextureLoader();
+  private readonly exrLoader = new EXRLoader();
   private readonly textureUrls: string[] = [];
   private readonly textureCache = new Map<string, Promise<Texture | null>>();
   private readonly managedTextures = new Set<Texture>();
@@ -623,7 +625,8 @@ export class ThreeViewport {
     this.textureUrls.push(url);
 
     const pending = new Promise<Texture | null>((resolve) => {
-      this.textureLoader.load(
+      const loader = this.isExrTexture(asset) ? this.exrLoader : this.textureLoader;
+      loader.load(
         url,
         (texture: Texture) => {
           texture.name = asset.path;
@@ -641,6 +644,10 @@ export class ThreeViewport {
     });
     this.textureCache.set(asset.path, pending);
     return pending;
+  }
+
+  private isExrTexture(asset: RenderableTexture): boolean {
+    return asset.path.toLowerCase().endsWith(".exr") || asset.mimeType === "image/x-exr";
   }
 
   private disposeMaterialTextures(material: MeshPhysicalMaterial): void {

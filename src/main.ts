@@ -98,7 +98,7 @@ app.innerHTML = `
         <span class="status-spinner" id="statusSpinner" hidden></span>
         <span class="status-label" id="statusLabel">Idle</span>
       </div>
-      <input id="filePicker" type="file" multiple accept=".usd,.usda,.usdc,.usdz" style="display:none" />
+      <input id="filePicker" type="file" multiple accept=".usd,.usda,.usdc,.usdz,.exr" style="display:none" />
       <input id="folderPicker" type="file" webkitdirectory style="display:none" />
     </nav>
     <nav class="scene-graph" aria-label="Scene graph">
