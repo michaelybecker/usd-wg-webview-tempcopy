@@ -12,5 +12,4 @@ build/
 docs/private/
 .vscode/
 package-lock.json
-localAssets/
 public/localAssets/

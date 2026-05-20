@@ -37,7 +37,7 @@ target_link_options(usdWebViewBindingsModule PRIVATE
     "SHELL:-sFORCE_FILESYSTEM=1"
     "SHELL:-sEXPORTED_RUNTIME_METHODS=['FS_createPath','FS_createDataFile','FS_analyzePath','FS_unlink']"
     "SHELL:--embed-file ${pxr_DIR}/lib/usd@/usd"
-    "SHELL:-Wl,--whole-archive ${pxr_DIR}/lib/libusd_usdImaging.a ${pxr_DIR}/lib/libusd_usdSkelImaging.a -Wl,--no-whole-archive"
+    "SHELL:-Wl,--whole-archive ${pxr_DIR}/lib/libusd_sdf.a ${pxr_DIR}/lib/libusd_usdSkel.a ${pxr_DIR}/lib/libusd_usdImaging.a ${pxr_DIR}/lib/libusd_usdSkelImaging.a ${pxr_DIR}/lib/libusd_sdr.a ${pxr_DIR}/lib/libusd_usdShaders.a -Wl,--no-whole-archive"
 )
 
 target_link_libraries(usdWebViewBindingsModule

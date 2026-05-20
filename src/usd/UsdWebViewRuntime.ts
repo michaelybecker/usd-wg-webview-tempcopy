@@ -1,6 +1,7 @@
 import type {
   UsdWebViewBindings,
   HydraSyncDriver,
+  ReferenceHydraDriver,
   PrimAttribute,
   PrimTransform,
   RenderableGaussianSplat,
@@ -18,6 +19,7 @@ const RUNTIME_ASSET_ROOT = "/usd-webview-bindings/";
 export class UsdWebViewRuntime {
   private bindings: UsdWebViewBindings | null = null;
   private hydraSyncDriver: HydraSyncDriver | null = null;
+  private referenceHydraDriver: ReferenceHydraDriver | null = null;
   private useHydraSyncDriver = true;
   currentStagePath: string | null = null;
 
@@ -92,6 +94,8 @@ export class UsdWebViewRuntime {
     const rootPath = rootFile.webkitRelativePath || rootFile.name;
     const summary = await this.bindings.openStage(rootPath);
     const normalizedSummary = normalizeStageSummary(rootPath, summary);
+    this.referenceHydraDriver?.delete?.();
+    this.referenceHydraDriver = null;
     this.hydraSyncDriver?.delete?.();
     this.hydraSyncDriver = null;
 
@@ -101,6 +105,34 @@ export class UsdWebViewRuntime {
 
     const gaussianSplats = this.bindings.extractGaussianSplats?.(rootPath) ?? [];
     this.currentStagePath = rootPath;
+    const startTime = normalizedSummary.startTimeCode ?? 0;
+    const endTime = normalizedSummary.endTimeCode ?? startTime;
+    const hasAnimationRange = Number.isFinite(startTime) && endTime > startTime;
+
+    if (
+      hasAnimationRange &&
+      request.referenceHydraRenderInterface &&
+      this.bindings.createReferenceHydraDriver
+    ) {
+      console.info("[USD WebView] attempting reference hydra load path");
+      this.referenceHydraDriver = this.bindings.createReferenceHydraDriver(
+        rootPath,
+        request.referenceHydraRenderInterface
+      );
+      if (this.referenceHydraDriver) {
+        this.referenceHydraDriver.SetTime(startTime);
+        this.referenceHydraDriver.Draw();
+        console.info("[USD WebView] using reference hydra load path");
+        return {
+          summary: normalizedSummary,
+          renderables: [],
+          gaussianSplats,
+          usedReferenceHydraDriver: true,
+        };
+      }
+      console.warn("[USD WebView] reference hydra load path unavailable; falling back");
+    }
+
     this.hydraSyncDriver = this.bindings.createHydraSyncDriver?.(rootPath) ?? null;
 
     // Use Hydra for initial geometry — same path as animation frames, avoids
@@ -129,6 +161,11 @@ export class UsdWebViewRuntime {
   }
 
   extractHydraRenderablesAtTime(timeCode: number): RenderableMesh[] {
+    if (this.referenceHydraDriver) {
+      this.referenceHydraDriver.SetTime(timeCode);
+      this.referenceHydraDriver.Draw();
+      return [];
+    }
     if (this.useHydraSyncDriver && this.hydraSyncDriver) {
       this.hydraSyncDriver.SetTime(timeCode);
       return this.hydraSyncDriver.Draw();
@@ -140,6 +177,12 @@ export class UsdWebViewRuntime {
   }
 
   getStageTiming(): { start: number; end: number; fps: number } | null {
+    if (this.referenceHydraDriver) {
+      const start = this.referenceHydraDriver.GetStartTimeCode?.() ?? 0;
+      const end = this.referenceHydraDriver.GetEndTimeCode?.() ?? 0;
+      const fps = this.referenceHydraDriver.GetTimeCodesPerSecond?.() ?? 24;
+      return { start, end, fps };
+    }
     if (!this.hydraSyncDriver) return null;
     const start = this.hydraSyncDriver.GetStartTimeCode?.() ?? 0;
     const end = this.hydraSyncDriver.GetEndTimeCode?.() ?? 0;

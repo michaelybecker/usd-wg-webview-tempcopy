@@ -1,6 +1,7 @@
 import createUsdWebViewBindingsModule from "./usdWebViewBindingsModule.js";
 
-const _wasmBuildId = "2026-05-15i"; // bump on every WASM rebuild to bust browser cache
+const _wasmBuildId = "2026-05-19v"; // bump on every WASM rebuild to bust browser cache
+const _wrapperBuildId = "reference-hydra-direct-match-2026-05-19g";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
@@ -35,6 +36,10 @@ function ensureDirectory(module, path) {
 
 window.UsdWebViewBindings = {
   async createRuntime(options = {}) {
+    console.info(
+      `[USD WebView] wrapper=${_wrapperBuildId} wasm=${_wasmBuildId}`
+    );
+
     const module = await createUsdWebViewBindingsModule({
       locateFile(path) {
         const base = options.locateFile?.(path) ?? path;
@@ -157,6 +162,42 @@ window.UsdWebViewBindings = {
           },
           delete() {
             module.DeleteHydraSyncDriver(handle);
+          },
+        };
+      },
+      createReferenceHydraDriver(path, renderInterface) {
+        if (!module.CreateReferenceHydraDriver) {
+          console.warn("[USD WebView] CreateReferenceHydraDriver is not available");
+          return null;
+        }
+        console.info(`[USD WebView] creating reference hydra driver for ${normalizePath(path)}`);
+        const handle = module.CreateReferenceHydraDriver(
+          normalizePath(path),
+          renderInterface
+        );
+        if (!handle) {
+          console.warn("[USD WebView] reference hydra driver returned null handle");
+          return null;
+        }
+        console.info(`[USD WebView] reference hydra driver handle=${handle}`);
+        return {
+          SetTime(timeCode) {
+            module.SetReferenceHydraDriverTime(handle, timeCode);
+          },
+          Draw() {
+            module.DrawReferenceHydraDriver(handle);
+          },
+          GetStartTimeCode() {
+            return module.GetReferenceHydraDriverStartTimeCode(handle);
+          },
+          GetEndTimeCode() {
+            return module.GetReferenceHydraDriverEndTimeCode(handle);
+          },
+          GetTimeCodesPerSecond() {
+            return module.GetReferenceHydraDriverTimeCodesPerSecond(handle);
+          },
+          delete() {
+            module.DeleteReferenceHydraDriver(handle);
           },
         };
       },

@@ -737,13 +737,6 @@ async function boot(): Promise<void> {
   const status = await runtime.load();
   renderRuntimeStatus(status);
 
-  if (status.state === "ready" && import.meta.env?.DEV) {
-    const devFile = "/testAssets/test_variants.usda";
-    const resp = await fetch(devFile);
-    const buf = await resp.arrayBuffer();
-    const file = new File([buf], devFile.split("/").pop()!, { type: "application/octet-stream" });
-    void loadFiles([file]);
-  }
 }
 
 async function loadFiles(files: File[]): Promise<void> {
@@ -766,9 +759,11 @@ async function loadFiles(files: File[]): Promise<void> {
 
   let result: StageLoadResult;
   try {
+    const referenceHydraRenderInterface = viewport.createReferenceHydraRenderInterface();
     result = await runtime.loadStage({
       files,
       rootFile,
+      referenceHydraRenderInterface,
     });
   } catch (error) {
     isLoadingStage = false;
@@ -780,7 +775,11 @@ async function loadFiles(files: File[]): Promise<void> {
   applyUpAxisOptions();
   renderRuntimeStatus(runtime.status);
   const gaussianSplats = result.gaussianSplats ?? [];
-  viewport.renderStage(result.renderables ?? [], result.summary, gaussianSplats.length > 0);
+  if (result.usedReferenceHydraDriver) {
+    viewport.frameCurrentStage();
+  } else {
+    viewport.renderStage(result.renderables ?? [], result.summary, gaussianSplats.length > 0);
+  }
   viewport.renderGaussianSplats(gaussianSplats);
   renderSceneGraph(runtime.getSceneGraph());
   viewportElement!.classList.add("has-stage");
@@ -805,7 +804,7 @@ async function loadFiles(files: File[]): Promise<void> {
     }
   }
   await waitForUiPaint();
-  if ((result.renderables?.length ?? 0) > 0) {
+  if (result.usedReferenceHydraDriver || (result.renderables?.length ?? 0) > 0) {
     setStatus("loading materials...", true);
     await waitForUiPaint();
     const materializedRenderables = runtime.extractRenderablesWithMaterials();
