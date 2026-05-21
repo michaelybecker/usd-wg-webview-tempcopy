@@ -143,6 +143,26 @@ input {
   cursor: default;
 }
 
+.menu-meter {
+  padding: 6px 10px 8px 22px;
+  color: #cbd2d8;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.menu-meter-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.menu-meter-input {
+  width: 160px;
+  accent-color: #8cd7ff;
+  cursor: ew-resize;
+}
+
 .status-bar {
   margin-left: auto;
   display: flex;

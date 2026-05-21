@@ -1,7 +1,30 @@
 import "./style.css";
 import { UsdWebViewRuntime } from "./usd/UsdWebViewRuntime";
 import { collectDroppedFiles, pickLikelyRootFile } from "./usd/fileIntake";
-import type { PrimAttribute, RuntimeStatus, SceneGraphPrim, StageLoadResult, StageSummary } from "./usd/types";
+import type {
+  PrimAttribute,
+  RenderableGaussianSplat,
+  RenderableMaterial,
+  RenderableMesh,
+  RuntimeStatus,
+  SceneGraphPrim,
+  StageLoadResult,
+  StageSummary,
+} from "./usd/types";
+import {
+  ACESFilmicToneMapping,
+  AgXToneMapping,
+  CineonToneMapping,
+  CustomToneMapping,
+  LinearSRGBColorSpace,
+  LinearToneMapping,
+  NeutralToneMapping,
+  NoToneMapping,
+  ReinhardToneMapping,
+  SRGBColorSpace,
+  type ColorSpace,
+  type ToneMapping,
+} from "three";
 
 import { ThreeViewport, type NavigationMode, type ViewUpAxis } from "./viewer/ThreeViewport";
 
@@ -31,14 +54,16 @@ app.innerHTML = `
       <div class="menu-item">
         <button class="menu-btn">Settings</button>
         <ul class="menu-dropdown">
-          <li><button class="menu-option" id="menuStats">Stats</button></li>
-          <li class="menu-separator" role="separator"></li>
           <li class="menu-submenu">
             <button class="menu-option menu-submenu-trigger">Navigation</button>
             <ul class="menu-dropdown menu-submenu-dropdown">
-              <li><button class="menu-option" data-navigation-mode="orbital">Orbital</button></li>
-              <li><button class="menu-option" data-navigation-mode="game">Game Engine</button></li>
-              <li class="menu-separator" role="separator"></li>
+              <li class="menu-submenu">
+                <button class="menu-option menu-submenu-trigger">Mode</button>
+                <ul class="menu-dropdown menu-submenu-dropdown">
+                  <li><button class="menu-option" data-navigation-mode="orbital">Orbital</button></li>
+                  <li><button class="menu-option" data-navigation-mode="game">Game Engine</button></li>
+                </ul>
+              </li>
               <li class="menu-submenu">
                 <button class="menu-option menu-submenu-trigger">Camera Speed</button>
                 <ul class="menu-dropdown menu-submenu-dropdown">
@@ -49,47 +74,101 @@ app.innerHTML = `
                   <li><button class="menu-option" data-camera-speed="10">10x</button></li>
                 </ul>
               </li>
-            </ul>
-          </li>
-          <li class="menu-submenu">
-            <button class="menu-option menu-submenu-trigger">Up Axis</button>
-            <ul class="menu-dropdown menu-submenu-dropdown">
-              <li><button class="menu-option" data-up-axis="stage">From Stage</button></li>
-              <li class="menu-separator" role="separator"></li>
-              <li><button class="menu-option" data-up-axis="y">Y Up</button></li>
-              <li><button class="menu-option" data-up-axis="z">Z Up</button></li>
-            </ul>
-          </li>
-          <li class="menu-separator" role="separator"></li>
-          <li class="menu-submenu">
-            <button class="menu-option menu-submenu-trigger">Splat Fidelity</button>
-            <ul class="menu-dropdown menu-submenu-dropdown">
-              <li><button class="menu-option" data-splat-fidelity="0">Base Color</button></li>
-              <li><button class="menu-option" data-splat-fidelity="1">Low SH</button></li>
-              <li><button class="menu-option" data-splat-fidelity="2">High SH</button></li>
-              <li><button class="menu-option" data-splat-fidelity="3">Full SH</button></li>
-            </ul>
-          </li>
-          <li class="menu-submenu">
-            <button class="menu-option menu-submenu-trigger">Splat Detail</button>
-            <ul class="menu-dropdown menu-submenu-dropdown">
-              <li><button class="menu-option" data-splat-detail="0">Crisp</button></li>
-              <li><button class="menu-option" data-splat-detail="1">Normal</button></li>
-              <li><button class="menu-option" data-splat-detail="2">Smooth</button></li>
-            </ul>
-          </li>
-          <li class="menu-separator" role="separator"></li>
-          <li class="menu-submenu">
-            <button class="menu-option menu-submenu-trigger">Payloads</button>
-            <ul class="menu-dropdown menu-submenu-dropdown">
-              <li><button class="menu-option" id="menuLoadAllPayloads">Load All</button></li>
-              <li><button class="menu-option" id="menuUnloadAllPayloads">Unload All</button></li>
-              <li class="menu-separator" role="separator"></li>
               <li class="menu-submenu">
-                <button class="menu-option menu-submenu-trigger">Load all payloads on Stage Open</button>
+                <button class="menu-option menu-submenu-trigger">Up Axis</button>
                 <ul class="menu-dropdown menu-submenu-dropdown">
-                  <li><button class="menu-option" data-load-payloads-on-open="true">True</button></li>
-                  <li><button class="menu-option" data-load-payloads-on-open="false">False</button></li>
+                  <li><button class="menu-option" data-up-axis="stage">From Stage</button></li>
+                  <li class="menu-separator" role="separator"></li>
+                  <li><button class="menu-option" data-up-axis="y">Y Up</button></li>
+                  <li><button class="menu-option" data-up-axis="z">Z Up</button></li>
+                </ul>
+              </li>
+            </ul>
+          </li>
+          <li class="menu-submenu">
+            <button class="menu-option menu-submenu-trigger">Display</button>
+            <ul class="menu-dropdown menu-submenu-dropdown">
+              <li class="menu-submenu">
+                <button class="menu-option menu-submenu-trigger">Color Space</button>
+                <ul class="menu-dropdown menu-submenu-dropdown">
+                  <li><button class="menu-option" data-output-color-space="srgb">sRGB</button></li>
+                  <li><button class="menu-option" data-output-color-space="srgb-linear">Linear sRGB</button></li>
+                </ul>
+              </li>
+              <li class="menu-submenu">
+                <button class="menu-option menu-submenu-trigger">Tone Mapping</button>
+                <ul class="menu-dropdown menu-submenu-dropdown">
+                  <li><button class="menu-option" data-tone-mapping="none">None</button></li>
+                  <li><button class="menu-option" data-tone-mapping="linear">Linear</button></li>
+                  <li><button class="menu-option" data-tone-mapping="reinhard">Reinhard</button></li>
+                  <li><button class="menu-option" data-tone-mapping="cineon">Cineon</button></li>
+                  <li><button class="menu-option" data-tone-mapping="aces">ACES Filmic</button></li>
+                  <li><button class="menu-option" data-tone-mapping="agx">AgX</button></li>
+                  <li><button class="menu-option" data-tone-mapping="neutral">Neutral</button></li>
+                  <li><button class="menu-option" data-tone-mapping="custom">Custom</button></li>
+                </ul>
+              </li>
+              <li class="menu-meter" id="toneMappingExposureControl">
+                <label class="menu-meter-label" for="toneMappingExposureInput">Tone Mapping Exposure <span id="toneMappingExposureValue">1.00</span></label>
+                <input id="toneMappingExposureInput" class="menu-meter-input" type="range" min="0" max="5" step="0.01" value="1" />
+              </li>
+            </ul>
+          </li>
+          <li class="menu-submenu">
+            <button class="menu-option menu-submenu-trigger">Lighting</button>
+            <ul class="menu-dropdown menu-submenu-dropdown">
+              <li><button class="menu-option" data-lighting-mode="default">Default lighting</button></li>
+              <li class="menu-submenu">
+                <button class="menu-option menu-submenu-trigger">HDR</button>
+                <ul class="menu-dropdown menu-submenu-dropdown">
+                  <li><button class="menu-option" id="menuLoadHdriMap">Load HDRi map...</button></li>
+                  <li><button class="menu-option" id="menuHdriVisible">Visible HDRi</button></li>
+                  <li class="menu-meter" id="hdriIntensityControl">
+                    <label class="menu-meter-label" for="hdriIntensityInput">IBL intensity <span id="hdriIntensityValue">1.00</span></label>
+                    <input id="hdriIntensityInput" class="menu-meter-input" type="range" min="0" max="5" step="0.01" value="1" />
+                  </li>
+                </ul>
+              </li>
+            </ul>
+          </li>
+          <li class="menu-submenu">
+            <button class="menu-option menu-submenu-trigger">Rendering</button>
+            <ul class="menu-dropdown menu-submenu-dropdown">
+              <li class="menu-submenu">
+                <button class="menu-option menu-submenu-trigger">Splat Fidelity</button>
+                <ul class="menu-dropdown menu-submenu-dropdown">
+                  <li><button class="menu-option" data-splat-fidelity="0">Base Color</button></li>
+                  <li><button class="menu-option" data-splat-fidelity="1">Low SH</button></li>
+                  <li><button class="menu-option" data-splat-fidelity="2">High SH</button></li>
+                  <li><button class="menu-option" data-splat-fidelity="3">Full SH</button></li>
+                </ul>
+              </li>
+              <li class="menu-submenu">
+                <button class="menu-option menu-submenu-trigger">Splat Detail</button>
+                <ul class="menu-dropdown menu-submenu-dropdown">
+                  <li><button class="menu-option" data-splat-detail="0">Crisp</button></li>
+                  <li><button class="menu-option" data-splat-detail="1">Normal</button></li>
+                  <li><button class="menu-option" data-splat-detail="2">Smooth</button></li>
+                </ul>
+              </li>
+            </ul>
+          </li>
+          <li class="menu-submenu">
+            <button class="menu-option menu-submenu-trigger">Stage</button>
+            <ul class="menu-dropdown menu-submenu-dropdown">
+              <li class="menu-submenu">
+                <button class="menu-option menu-submenu-trigger">Payloads</button>
+                <ul class="menu-dropdown menu-submenu-dropdown">
+                  <li><button class="menu-option" id="menuLoadAllPayloads">Load All</button></li>
+                  <li><button class="menu-option" id="menuUnloadAllPayloads">Unload All</button></li>
+                  <li class="menu-separator" role="separator"></li>
+                  <li class="menu-submenu">
+                    <button class="menu-option menu-submenu-trigger">Load all payloads on Stage Open</button>
+                    <ul class="menu-dropdown menu-submenu-dropdown">
+                      <li><button class="menu-option" data-load-payloads-on-open="true">True</button></li>
+                      <li><button class="menu-option" data-load-payloads-on-open="false">False</button></li>
+                    </ul>
+                  </li>
                 </ul>
               </li>
             </ul>
@@ -100,6 +179,7 @@ app.innerHTML = `
         <button class="menu-btn">?</button>
         <ul class="menu-dropdown">
           <li><button class="menu-option" id="menuTutorial">Show Tutorial</button></li>
+          <li><button class="menu-option" id="menuStats">Stats</button></li>
         </ul>
       </div>
       <div class="status-bar" id="statusBar" role="status" aria-live="polite">
@@ -108,6 +188,7 @@ app.innerHTML = `
       </div>
       <input id="filePicker" type="file" multiple accept=".usd,.usda,.usdc,.usdz,.exr" style="display:none" />
       <input id="folderPicker" type="file" webkitdirectory style="display:none" />
+      <input id="hdriPicker" type="file" accept=".hdr,.exr" style="display:none" />
     </nav>
     <nav class="scene-graph" aria-label="Scene graph">
       <div class="panel-header">Scene Graph</div>
@@ -141,8 +222,6 @@ app.innerHTML = `
       <button class="stats-close" id="statsClose" aria-label="Close">&times;</button>
     </div>
     <div class="stats-body">
-      <p class="stats-section-title">Runtime</p>
-      <dl id="runtimeStatus" class="status-list"></dl>
       <p class="stats-section-title">Stage</p>
       <dl id="stageSummary" class="status-list"></dl>
     </div>
@@ -161,7 +240,7 @@ app.innerHTML = `
           <tr><td>Scroll / Pinch</td><td>Zoom camera</td></tr>
           <tr><td>F</td><td>Frame selected prim</td></tr>
           <tr><td>Click mesh</td><td>Select prim</td></tr>
-          <tr><td>Settings &gt; Navigation &gt; Game Engine</td><td>Hold right mouse and use WASD + Q/E to fly; scroll while held changes speed</td></tr>
+          <tr><td>Settings &gt; Navigation &gt; Mode &gt; Game Engine</td><td>Hold right mouse and use WASD + Q/E to fly; scroll while held changes speed</td></tr>
         </tbody>
         <thead><tr><th colspan="2">Scene Graph</th></tr></thead>
         <tbody>
@@ -170,7 +249,7 @@ app.innerHTML = `
           <tr><td><span class="sg-badge sg-badge--variant" style="pointer-events:none">V</span> badge</td><td>Prim has USD variant sets — click to cycle, dropdown to pick</td></tr>
           <tr><td><span class="sg-badge sg-badge--payload sg-badge--payload-loaded" style="pointer-events:none">P</span> badge (amber)</td><td>Payload loaded — click to unload; prim stays in tree but dims</td></tr>
           <tr><td><span class="sg-badge sg-badge--payload" style="pointer-events:none">P</span> badge (grey)</td><td>Payload unloaded — click to reload geometry and materials</td></tr>
-          <tr><td>Settings &gt; Payloads</td><td>Bulk-toggle payloads and choose the stage-open payload policy</td></tr>
+          <tr><td>Settings &gt; Stage &gt; Payloads</td><td>Bulk-toggle payloads and choose the stage-open payload policy</td></tr>
         </tbody>
       </table>
     </div>
@@ -178,10 +257,10 @@ app.innerHTML = `
 `;
 
 const viewportElement = app.querySelector<HTMLElement>(".viewport");
-const runtimeStatusElement = app.querySelector<HTMLElement>("#runtimeStatus");
 const stageSummaryElement = app.querySelector<HTMLElement>("#stageSummary");
 const filePicker = app.querySelector<HTMLInputElement>("#filePicker");
 const folderPicker = app.querySelector<HTMLInputElement>("#folderPicker");
+const hdriPicker = app.querySelector<HTMLInputElement>("#hdriPicker");
 const playbar = app.querySelector<HTMLElement>("#playbar");
 const playBtn = app.querySelector<HTMLButtonElement>("#playBtn");
 const playbarTime = app.querySelector<HTMLElement>("#playbarTime");
@@ -196,13 +275,17 @@ const statsPanel = app.querySelector<HTMLElement>("#statsPanel")!;
 const statsClose = app.querySelector<HTMLButtonElement>("#statsClose")!;
 const tutorialOverlay = app.querySelector<HTMLElement>("#tutorialOverlay")!;
 const tutorialClose = app.querySelector<HTMLButtonElement>("#tutorialClose")!;
+const hdriIntensityInput = app.querySelector<HTMLInputElement>("#hdriIntensityInput")!;
+const hdriIntensityValue = app.querySelector<HTMLElement>("#hdriIntensityValue")!;
+const toneMappingExposureInput = app.querySelector<HTMLInputElement>("#toneMappingExposureInput")!;
+const toneMappingExposureValue = app.querySelector<HTMLElement>("#toneMappingExposureValue")!;
 
 if (
   !viewportElement ||
-  !runtimeStatusElement ||
   !stageSummaryElement ||
   !filePicker ||
   !folderPicker ||
+  !hdriPicker ||
   !playbar ||
   !playBtn ||
   !playbarTime ||
@@ -217,7 +300,6 @@ if (
   throw new Error("USD Web View UI failed to initialize.");
 }
 
-const runtimeStatusList = runtimeStatusElement;
 const stageSummaryList = stageSummaryElement;
 
 const viewport = new ThreeViewport(viewportElement);
@@ -226,6 +308,17 @@ runtime.setHydraSyncDriverEnabled(
   localStorage.getItem("usdWebView.hydraSyncDriver") !== "0"
 );
 type UpAxisChoice = "stage" | ViewUpAxis;
+type LightingMode = "default" | "hdri";
+type OutputColorSpaceChoice = typeof SRGBColorSpace | typeof LinearSRGBColorSpace;
+type ToneMappingChoice =
+  | "none"
+  | "linear"
+  | "reinhard"
+  | "cineon"
+  | "aces"
+  | "agx"
+  | "neutral"
+  | "custom";
 
 const splatFidelityOptions = [
   { label: "Base Color", maxShDegree: 0 },
@@ -244,6 +337,13 @@ let splatFidelityIndex = splatFidelityOptions.length - 1;
 let splatDetailIndex = 1;
 let navigationMode: NavigationMode = "orbital";
 let upAxisChoice: UpAxisChoice = "stage";
+let outputColorSpace: OutputColorSpaceChoice = SRGBColorSpace;
+let toneMappingChoice: ToneMappingChoice = "none";
+let toneMappingExposure = 1;
+let lightingMode: LightingMode = "default";
+let hdriMapVisible = true;
+let hdriIntensity = 1;
+let hdriMapLabel: string | null = null;
 let gameCameraSpeed = 2;
 const loadAllPayloadsOnStageOpenStorageKey = "usdWebView.loadAllPayloadsOnStageOpen";
 if (localStorage.getItem(loadAllPayloadsOnStageOpenStorageKey) === null) {
@@ -252,6 +352,18 @@ if (localStorage.getItem(loadAllPayloadsOnStageOpenStorageKey) === null) {
 let loadAllPayloadsOnStageOpen =
   localStorage.getItem(loadAllPayloadsOnStageOpenStorageKey) !== "false";
 let currentStageSummary: StageSummary | null = null;
+type StageStats = {
+  meshes: number;
+  vertices: number;
+  triangles: number;
+  materialBindings: number;
+  materials: number;
+  textures: number;
+  gaussianSplats: number;
+  splatPoints: number;
+};
+
+let currentStageStats: StageStats | null = null;
 let isLoadingStage = false;
 let variantChangeSerial = 0;
 
@@ -745,6 +857,62 @@ function applyUpAxisOptions(): void {
   renderStageSummary(currentStageSummary);
 }
 
+function applyColorSpaceOptions(): void {
+  viewport.setOutputColorSpace(outputColorSpace as ColorSpace);
+  for (const button of app!.querySelectorAll<HTMLButtonElement>("[data-output-color-space]")) {
+    button.classList.toggle("menu-option--checked", button.dataset.outputColorSpace === outputColorSpace);
+  }
+}
+
+function toneMappingForChoice(choice: ToneMappingChoice): ToneMapping {
+  switch (choice) {
+    case "linear":
+      return LinearToneMapping;
+    case "reinhard":
+      return ReinhardToneMapping;
+    case "cineon":
+      return CineonToneMapping;
+    case "aces":
+      return ACESFilmicToneMapping;
+    case "agx":
+      return AgXToneMapping;
+    case "neutral":
+      return NeutralToneMapping;
+    case "custom":
+      return CustomToneMapping;
+    case "none":
+    default:
+      return NoToneMapping;
+  }
+}
+
+function applyToneMappingOptions(): void {
+  viewport.setToneMapping(toneMappingForChoice(toneMappingChoice));
+  viewport.setToneMappingExposure(toneMappingExposure);
+  for (const button of app!.querySelectorAll<HTMLButtonElement>("[data-tone-mapping]")) {
+    button.classList.toggle("menu-option--checked", button.dataset.toneMapping === toneMappingChoice);
+  }
+  toneMappingExposureInput.value = String(toneMappingExposure);
+  toneMappingExposureValue.textContent = toneMappingExposure.toFixed(2);
+}
+
+function applyLightingOptions(): void {
+  for (const button of app!.querySelectorAll<HTMLButtonElement>("[data-lighting-mode]")) {
+    button.classList.toggle("menu-option--checked", button.dataset.lightingMode === lightingMode);
+  }
+  app!.querySelector<HTMLButtonElement>("#menuHdriVisible")
+    ?.classList.toggle("menu-option--checked", hdriMapVisible);
+  const loadButton = app!.querySelector<HTMLButtonElement>("#menuLoadHdriMap");
+  if (loadButton) {
+    loadButton.classList.toggle("menu-option--checked", lightingMode === "hdri");
+    loadButton.textContent = hdriMapLabel
+      ? `Load HDRi map... (${hdriMapLabel})`
+      : "Load HDRi map...";
+  }
+  hdriIntensityInput.value = String(hdriIntensity);
+  hdriIntensityValue.textContent = hdriIntensity.toFixed(2);
+}
+
 for (const button of app.querySelectorAll<HTMLButtonElement>("[data-navigation-mode]")) {
   button.addEventListener("click", () => {
     navigationMode = button.dataset.navigationMode as NavigationMode;
@@ -772,6 +940,64 @@ for (const button of app.querySelectorAll<HTMLButtonElement>("[data-up-axis]")) 
     applyUpAxisOptions();
   });
 }
+
+for (const button of app.querySelectorAll<HTMLButtonElement>("[data-output-color-space]")) {
+  button.addEventListener("click", () => {
+    outputColorSpace = button.dataset.outputColorSpace === LinearSRGBColorSpace
+      ? LinearSRGBColorSpace
+      : SRGBColorSpace;
+    applyColorSpaceOptions();
+  });
+}
+
+for (const button of app.querySelectorAll<HTMLButtonElement>("[data-tone-mapping]")) {
+  button.addEventListener("click", () => {
+    toneMappingChoice = (button.dataset.toneMapping ?? "none") as ToneMappingChoice;
+    applyToneMappingOptions();
+  });
+}
+
+app.querySelector("#toneMappingExposureControl")?.addEventListener("click", (event) => {
+  event.stopPropagation();
+});
+
+toneMappingExposureInput.addEventListener("input", () => {
+  toneMappingExposure = Number(toneMappingExposureInput.value);
+  applyToneMappingOptions();
+});
+
+app.querySelector("#menuLoadHdriMap")?.addEventListener("click", () => {
+  hdriPicker.value = "";
+  hdriPicker.click();
+});
+
+for (const button of app.querySelectorAll<HTMLButtonElement>("[data-lighting-mode]")) {
+  button.addEventListener("click", () => {
+    lightingMode = button.dataset.lightingMode as LightingMode;
+    if (lightingMode === "default") {
+      viewport.useDefaultLighting();
+      hdriMapLabel = null;
+    }
+    applyLightingOptions();
+    setStatus("Ready", false);
+  });
+}
+
+app.querySelector("#menuHdriVisible")?.addEventListener("click", () => {
+  hdriMapVisible = !hdriMapVisible;
+  viewport.setHdriMapVisible(hdriMapVisible);
+  applyLightingOptions();
+});
+
+app.querySelector("#hdriIntensityControl")?.addEventListener("click", (event) => {
+  event.stopPropagation();
+});
+
+hdriIntensityInput.addEventListener("input", () => {
+  hdriIntensity = Number(hdriIntensityInput.value);
+  viewport.setHdriIntensity(hdriIntensity);
+  applyLightingOptions();
+});
 
 function applySplatViewOptions(): void {
   const fidelity = splatFidelityOptions[splatFidelityIndex];
@@ -826,6 +1052,9 @@ for (const button of app.querySelectorAll<HTMLButtonElement>("[data-load-payload
 applySplatViewOptions();
 applyNavigationOptions();
 applyUpAxisOptions();
+applyColorSpaceOptions();
+applyToneMappingOptions();
+applyLightingOptions();
 applyPayloadOpenOptions();
 
 app.querySelector("#menuLoadAllPayloads")?.addEventListener("click", () => {
@@ -952,6 +1181,30 @@ filePicker.addEventListener("change", () => {
 
 folderPicker.addEventListener("change", () => {
   void loadFiles(Array.from(folderPicker.files ?? []));
+});
+
+hdriPicker.addEventListener("change", () => {
+  const file = hdriPicker.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  void (async () => {
+    setStatus("loading HDRi map...", true);
+    await waitForUiPaint();
+    try {
+      viewport.setHdriMapVisible(hdriMapVisible);
+      viewport.setHdriIntensity(hdriIntensity);
+      await viewport.loadHdriMap(file);
+      lightingMode = "hdri";
+      hdriMapLabel = file.name;
+      applyLightingOptions();
+      setStatus("Ready", false);
+    } catch (error) {
+      setStatus(`HDRi load failed: ${error instanceof Error ? error.message : String(error)}`, false);
+      console.warn("Failed to load HDRi map", error);
+    }
+  })();
 });
 
 viewportElement.addEventListener("dragover", (event) => {

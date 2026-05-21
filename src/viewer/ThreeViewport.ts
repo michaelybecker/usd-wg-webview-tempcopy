@@ -3,26 +3,33 @@ import {
   AxesHelper,
   Box3,
   Color,
-  DirectionalLight,
+  type ColorSpace,
   DoubleSide,
+  EquirectangularReflectionMapping,
   Float32BufferAttribute,
   BufferGeometry,
   Group,
+  HemisphereLight,
   Mesh,
   MeshPhysicalMaterial,
+  PMREMGenerator,
   PerspectiveCamera,
   Raycaster,
   Scene,
   SRGBColorSpace,
   LinearSRGBColorSpace,
+  type ToneMapping,
   TextureLoader,
   Texture,
   Vector2,
   Vector3,
   WebGLRenderer,
+  WebGLRenderTarget,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { EXRLoader } from "three/examples/jsm/loaders/EXRLoader.js";
+import { HDRLoader } from "three/examples/jsm/loaders/HDRLoader.js";
 import type { PrimTransform, RenderableMaterial, RenderableMesh, RenderableGaussianSplat, RenderableTexture, StageSummary } from "../usd/types";
 import { GaussianSplatRenderer, type SplatViewOptions } from "./GaussianSplatRenderer";
 
@@ -48,6 +55,7 @@ export type ReferenceHydraRenderInterface = {
 };
 
 export class ThreeViewport {
+  private readonly defaultBackground = new Color(0x181d21);
   private readonly camera: PerspectiveCamera;
   private readonly controls: OrbitControls;
   private readonly renderer: WebGLRenderer;
@@ -55,9 +63,19 @@ export class ThreeViewport {
   private readonly stageRoot = new Group();
   private readonly textureLoader = new TextureLoader();
   private readonly exrLoader = new EXRLoader();
+  private readonly hdrLoader = new HDRLoader();
   private readonly textureUrls: string[] = [];
   private readonly textureCache = new Map<string, Promise<Texture | null>>();
   private readonly managedTextures = new Set<Texture>();
+  private readonly ambientLight: AmbientLight;
+  private readonly hemisphereLight: HemisphereLight;
+  private readonly defaultEnvironmentTarget: WebGLRenderTarget;
+  private readonly defaultAmbientIntensity = 0.22;
+  private readonly defaultHemisphereIntensity = 1.25;
+  private readonly defaultEnvironmentIntensity = 0.7;
+  private hdriTexture: Texture | null = null;
+  private hdriMapVisible = true;
+  private hdriIntensity = 1;
   private readonly meshByPath = new Map<string, Mesh>();
   private readonly pathByMesh = new Map<Mesh, string>();
   private readonly highlightedMeshes = new Set<Mesh>();
@@ -79,7 +97,7 @@ export class ThreeViewport {
 
   constructor(private readonly host: HTMLElement) {
     this.scene = new Scene();
-    this.scene.background = new Color(0x181d21);
+    this.scene.background = this.defaultBackground;
 
     this.camera = new PerspectiveCamera(50, 1, 0.01, 10000);
     this.camera.position.set(4, 3, 6);
@@ -88,17 +106,23 @@ export class ThreeViewport {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.host.appendChild(this.renderer.domElement);
 
+    const pmremGenerator = new PMREMGenerator(this.renderer);
+    const roomEnvironment = new RoomEnvironment();
+    this.defaultEnvironmentTarget = pmremGenerator.fromScene(roomEnvironment);
+    pmremGenerator.dispose();
+
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
 
     this.stageRoot.name = "USD Stage Root";
     this.scene.add(this.stageRoot);
-    this.scene.add(new AmbientLight(0xd8e8ff, 0.55));
+    this.ambientLight = new AmbientLight(0xffffff, this.defaultAmbientIntensity);
+    this.scene.add(this.ambientLight);
 
-    const keyLight = new DirectionalLight(0xffffff, 2.4);
-    keyLight.position.set(3, 5, 4);
-    this.scene.add(keyLight);
+    this.hemisphereLight = new HemisphereLight(0xfff7ec, 0x6b737c, this.defaultHemisphereIntensity);
+    this.scene.add(this.hemisphereLight);
+    this.applyDefaultEnvironment();
     this.scene.add(new AxesHelper(1.25));
 
     this.splatRenderer = new GaussianSplatRenderer(this.renderer, this.scene);
@@ -128,7 +152,9 @@ export class ThreeViewport {
     this.removeGameNavigationHandlers();
     this.controls.dispose();
     this.splatRenderer.dispose();
+    this.disposeHdriTexture();
     this.revokeTextureUrls();
+    this.defaultEnvironmentTarget.dispose();
     this.renderer.dispose();
   }
 
@@ -269,6 +295,64 @@ export class ThreeViewport {
 
   getViewUpAxis(): ViewUpAxis {
     return this.viewUpAxis;
+  }
+
+  setOutputColorSpace(colorSpace: ColorSpace): void {
+    this.renderer.outputColorSpace = colorSpace;
+  }
+
+  setToneMapping(toneMapping: ToneMapping): void {
+    this.renderer.toneMapping = toneMapping;
+  }
+
+  setToneMappingExposure(exposure: number): void {
+    this.renderer.toneMappingExposure = Math.min(5, Math.max(0, exposure));
+  }
+
+  async loadHdriMap(file: File): Promise<void> {
+    const url = URL.createObjectURL(file);
+    try {
+      const texture = await this.loadHdriTexture(file, url);
+      texture.name = file.name;
+      texture.mapping = EquirectangularReflectionMapping;
+      texture.colorSpace = LinearSRGBColorSpace;
+      texture.needsUpdate = true;
+
+      this.disposeHdriTexture();
+      this.hdriTexture = texture;
+      this.scene.environment = texture;
+      this.scene.background = this.hdriMapVisible ? texture : this.defaultBackground;
+      this.applyHdriIntensity();
+      this.setDefaultLightRigEnabled(false);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  useDefaultLighting(): void {
+    this.disposeHdriTexture();
+    this.scene.background = this.defaultBackground;
+    this.applyDefaultEnvironment();
+    this.setDefaultLightRigEnabled(true);
+  }
+
+  setHdriMapVisible(visible: boolean): void {
+    this.hdriMapVisible = visible;
+    if (!this.hdriTexture) {
+      return;
+    }
+    this.scene.background = visible ? this.hdriTexture : this.defaultBackground;
+  }
+
+  setHdriIntensity(intensity: number): void {
+    this.hdriIntensity = Math.min(5, Math.max(0, intensity));
+    if (this.hdriTexture) {
+      this.applyHdriIntensity();
+    }
+  }
+
+  hasHdriMap(): boolean {
+    return this.hdriTexture !== null;
   }
 
   setGameCameraSpeed(speed: number): void {
@@ -787,6 +871,43 @@ export class ThreeViewport {
 
   private isExrTexture(asset: RenderableTexture): boolean {
     return asset.path.toLowerCase().endsWith(".exr") || asset.mimeType === "image/x-exr";
+  }
+
+  private loadHdriTexture(file: File, url: string): Promise<Texture> {
+    if (file.name.toLowerCase().endsWith(".exr")) {
+      return this.exrLoader.loadAsync(url);
+    }
+    return this.hdrLoader.loadAsync(url);
+  }
+
+  private setDefaultLightRigEnabled(enabled: boolean): void {
+    this.ambientLight.intensity = enabled ? this.defaultAmbientIntensity : 0;
+    this.hemisphereLight.intensity = enabled ? this.defaultHemisphereIntensity : 0;
+  }
+
+  private applyDefaultEnvironment(): void {
+    this.scene.environment = this.defaultEnvironmentTarget.texture;
+    this.scene.environmentIntensity = this.defaultEnvironmentIntensity;
+    this.scene.backgroundIntensity = 1;
+  }
+
+  private applyHdriIntensity(): void {
+    this.scene.environmentIntensity = this.hdriIntensity;
+    this.scene.backgroundIntensity = this.hdriIntensity;
+  }
+
+  private disposeHdriTexture(): void {
+    if (!this.hdriTexture) {
+      return;
+    }
+    if (this.scene.environment === this.hdriTexture) {
+      this.scene.environment = null;
+    }
+    if (this.scene.background === this.hdriTexture) {
+      this.scene.background = this.defaultBackground;
+    }
+    this.hdriTexture.dispose();
+    this.hdriTexture = null;
   }
 
   private disposeMaterialTextures(material: MeshPhysicalMaterial): void {
