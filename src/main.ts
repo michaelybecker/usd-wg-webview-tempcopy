@@ -496,6 +496,7 @@ async function applyVariantChange(
     normalizedVariantSet.includes("shading") ||
     normalizedVariantSet.includes("material");
   const isAnimationVariant = normalizedVariantSet.includes("animation");
+  const isModelingVariant = normalizedVariantSet.includes("modeling");
 
   setStatus(loadingMessage, true);
   await waitForUiPaint();
@@ -504,11 +505,11 @@ async function applyVariantChange(
     const subtreeRenderables = primPath && !isAnimationVariant
       ? runtime.extractHydraRenderableSubtreeAtTime(primPath, animCurrent)
       : null;
-    if (primPath && !isAnimationVariant && subtreeRenderables) {
+    if (primPath && !isAnimationVariant && subtreeRenderables && subtreeRenderables.length > 0) {
       viewport.updateRenderablesUnderRoot(
         primPath,
         subtreeRenderables,
-        false
+        isModelingVariant
       );
     } else {
       let renderables = runtime.extractHydraRenderableSnapshotAtTime(animCurrent);
@@ -518,7 +519,7 @@ async function applyVariantChange(
       if (isAnimationVariant) {
         viewport.renderStage(renderables, currentStageSummary, false);
       } else {
-        viewport.updateRenderables(renderables);
+        viewport.updateRenderables(renderables, isModelingVariant);
       }
     }
     viewport.renderGaussianSplats(runtime.extractGaussianSplats());

@@ -284,8 +284,8 @@ export class ThreeViewport {
     return this.gameCameraSpeed;
   }
 
-  updateRenderables(renderables: RenderableMesh[]): void {
-    this.updateRenderablesInScope(renderables);
+  updateRenderables(renderables: RenderableMesh[], forceGeometryUpdate = false): void {
+    this.updateRenderablesInScope(renderables, undefined, forceGeometryUpdate);
   }
 
   updateRenderablesUnderRoot(
@@ -531,6 +531,8 @@ export class ThreeViewport {
       if (!geo.attributes.uv && savedUv) geo.setAttribute("uv", savedUv);
       if (!geo.attributes.uv1 && savedUv1) geo.setAttribute("uv1", savedUv1);
     }
+    geo.computeBoundingBox();
+    geo.computeBoundingSphere();
   }
 
   // Face-expand: for each index, copy `stride` floats from `data`. Matches the
@@ -561,6 +563,8 @@ export class ThreeViewport {
       this.applyGeometryGroups(geo, renderable);
     }
     this.setExpandedVertexNormals(geo, points, indices);
+    geo.computeBoundingBox();
+    geo.computeBoundingSphere();
     return geo;
   }
 
