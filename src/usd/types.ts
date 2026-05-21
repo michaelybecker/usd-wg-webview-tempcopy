@@ -16,6 +16,15 @@ export type StageSummary = {
   rootLayerIdentifier?: string;
   primCount?: number;
   layerCount?: number;
+  meshPrimCount?: number;
+  authoredPointCount?: number;
+  authoredFaceCount?: number;
+  materialPrimCount?: number;
+  materialBindingCount?: number;
+  textureAssetCount?: number;
+  payloadPrimCount?: number;
+  variantSetCount?: number;
+  instancePrimCount?: number;
   timeCodesPerSecond?: number;
   startTimeCode?: number;
   endTimeCode?: number;

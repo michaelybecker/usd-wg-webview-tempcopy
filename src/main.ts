@@ -222,8 +222,10 @@ app.innerHTML = `
       <button class="stats-close" id="statsClose" aria-label="Close">&times;</button>
     </div>
     <div class="stats-body">
-      <p class="stats-section-title">Stage</p>
-      <dl id="stageSummary" class="status-list"></dl>
+      <p class="stats-section-title">USD Stage</p>
+      <dl id="usdStageSummary" class="status-list"></dl>
+      <p class="stats-section-title">Renderer</p>
+      <dl id="rendererSummary" class="status-list"></dl>
     </div>
   </div>
   <div class="tutorial-overlay" id="tutorialOverlay" hidden>
@@ -257,7 +259,8 @@ app.innerHTML = `
 `;
 
 const viewportElement = app.querySelector<HTMLElement>(".viewport");
-const stageSummaryElement = app.querySelector<HTMLElement>("#stageSummary");
+const usdStageSummaryElement = app.querySelector<HTMLElement>("#usdStageSummary");
+const rendererSummaryElement = app.querySelector<HTMLElement>("#rendererSummary");
 const filePicker = app.querySelector<HTMLInputElement>("#filePicker");
 const folderPicker = app.querySelector<HTMLInputElement>("#folderPicker");
 const hdriPicker = app.querySelector<HTMLInputElement>("#hdriPicker");
@@ -282,7 +285,8 @@ const toneMappingExposureValue = app.querySelector<HTMLElement>("#toneMappingExp
 
 if (
   !viewportElement ||
-  !stageSummaryElement ||
+  !usdStageSummaryElement ||
+  !rendererSummaryElement ||
   !filePicker ||
   !folderPicker ||
   !hdriPicker ||
@@ -300,7 +304,8 @@ if (
   throw new Error("USD Web View UI failed to initialize.");
 }
 
-const stageSummaryList = stageSummaryElement;
+const usdStageSummaryList = usdStageSummaryElement;
+const rendererSummaryList = rendererSummaryElement;
 
 const viewport = new ThreeViewport(viewportElement);
 const runtime = new UsdWebViewRuntime();
@@ -352,7 +357,7 @@ if (localStorage.getItem(loadAllPayloadsOnStageOpenStorageKey) === null) {
 let loadAllPayloadsOnStageOpen =
   localStorage.getItem(loadAllPayloadsOnStageOpenStorageKey) !== "false";
 let currentStageSummary: StageSummary | null = null;
-type StageStats = {
+type RendererStats = {
   meshes: number;
   vertices: number;
   triangles: number;
@@ -363,7 +368,7 @@ type StageStats = {
   splatPoints: number;
 };
 
-let currentStageStats: StageStats | null = null;
+let currentRendererStats: RendererStats | null = null;
 let isLoadingStage = false;
 let variantChangeSerial = 0;
 
@@ -650,6 +655,13 @@ async function applyVariantChange(
 
   const newPrims = runtime.getSceneGraph();
   renderSceneGraph(newPrims);
+  currentRendererStats = collectRendererStats(
+    materializedRenderables.length > 0
+      ? materializedRenderables
+      : runtime.extractHydraRenderableSnapshotAtTime(animCurrent) ?? runtime.extractRenderables(),
+    runtime.extractGaussianSplats()
+  );
+  renderStageSummary(currentStageSummary);
   if (selectedPrimPath) {
     if (newPrims.some((p) => p.path === selectedPrimPath)) {
       viewport.setSelectedPrim(selectedPrimPath);
@@ -724,11 +736,6 @@ sceneGraphList!.addEventListener("click", (e) => {
 
 // --- Inspector rendering ---
 function renderRuntimeStatus(status: RuntimeStatus): void {
-  runtimeStatusList.innerHTML = renderDefinitionList({
-    state: status.state,
-    source: status.source,
-    detail: status.detail,
-  });
   if (!isLoadingStage) {
     setStatus(status.state === "ready" ? "Ready" : status.detail, status.state === "loading");
   }
@@ -737,22 +744,39 @@ function renderRuntimeStatus(status: RuntimeStatus): void {
 function renderStageSummary(summary: StageSummary | null): void {
   const viewerUpAxis = getEffectiveUpAxis(summary?.upAxis);
   if (!summary) {
-    stageSummaryList.innerHTML = renderDefinitionList({
+    usdStageSummaryList.innerHTML = renderDefinitionList({
       file: "None",
       prims: "-",
       layers: "-",
-      time: "-",
+      "mesh prims": "-",
+      "authored points": "-",
+      "authored faces": "-",
+      materials: "-",
+      "texture assets": "-",
+      payloads: "-",
+      variants: "-",
+      instances: "-",
       "stage up": "-",
       "viewer up": formatUpAxis(viewerUpAxis),
     });
+    renderRendererSummary(null);
     return;
   }
 
-  stageSummaryList.innerHTML = renderDefinitionList({
+  usdStageSummaryList.innerHTML = renderDefinitionList({
     file: summary.rootFile,
     root: summary.rootLayerIdentifier ?? "-",
     prims: String(summary.primCount ?? "-"),
     layers: String(summary.layerCount ?? "-"),
+    "mesh prims": formatCount(summary.meshPrimCount),
+    "authored points": formatCount(summary.authoredPointCount),
+    "authored faces": formatCount(summary.authoredFaceCount),
+    materials: formatCount(summary.materialPrimCount),
+    "material bindings": formatCount(summary.materialBindingCount),
+    "texture assets": formatCount(summary.textureAssetCount),
+    payloads: formatCount(summary.payloadPrimCount),
+    variants: formatCount(summary.variantSetCount),
+    instances: formatCount(summary.instancePrimCount),
     time: summary.timeCodesPerSecond
       ? `${summary.timeCodesPerSecond} fps`
       : "-",
@@ -764,6 +788,78 @@ function renderStageSummary(summary: StageSummary | null): void {
     "viewer up": formatUpAxis(viewerUpAxis),
     error: summary.error ?? "-",
   });
+  renderRendererSummary(currentRendererStats);
+}
+
+function renderRendererSummary(stats: RendererStats | null): void {
+  rendererSummaryList.innerHTML = renderDefinitionList({
+    "rendered meshes": stats ? formatCount(stats.meshes) : "-",
+    "rendered vertices": stats ? formatCount(stats.vertices) : "-",
+    "rendered triangles": stats ? formatCount(stats.triangles) : "-",
+    "material bindings": stats ? formatCount(stats.materialBindings) : "-",
+    "rendered materials": stats ? formatCount(stats.materials) : "-",
+    "texture maps": stats ? formatCount(stats.textures) : "-",
+    "gaussian splats": stats ? formatCount(stats.gaussianSplats) : "-",
+    "splat points": stats ? formatCount(stats.splatPoints) : "-",
+  });
+}
+
+function collectRendererStats(
+  renderables: RenderableMesh[],
+  splats: RenderableGaussianSplat[]
+): RendererStats {
+  const materialKeys = new Set<string>();
+  const textureKeys = new Set<string>();
+  let materialBindings = 0;
+
+  for (const renderable of renderables) {
+    if (renderable.material) {
+      addRenderableMaterialStats(renderable.material, renderable.path, materialKeys, textureKeys);
+      materialBindings += 1;
+    }
+    for (const subset of renderable.materialSubsets ?? []) {
+      addRenderableMaterialStats(subset.material, subset.path, materialKeys, textureKeys);
+      materialBindings += 1;
+    }
+  }
+
+  return {
+    meshes: renderables.length,
+    vertices: renderables.reduce((sum, renderable) => sum + Math.floor(renderable.points.length / 3), 0),
+    triangles: renderables.reduce((sum, renderable) => sum + Math.floor(renderable.indices.length / 3), 0),
+    materialBindings,
+    materials: materialKeys.size,
+    textures: textureKeys.size,
+    gaussianSplats: splats.length,
+    splatPoints: splats.reduce((sum, splat) => sum + splat.count, 0),
+  };
+}
+
+function addRenderableMaterialStats(
+  material: RenderableMaterial | undefined,
+  fallbackKey: string,
+  materialKeys: Set<string>,
+  textureKeys: Set<string>
+): void {
+  if (!material) {
+    return;
+  }
+  materialKeys.add(material.path ?? fallbackKey);
+  for (const texture of [
+    material.diffuseTexture,
+    material.roughnessTexture,
+    material.metallicTexture,
+    material.normalTexture,
+    material.occlusionTexture,
+    material.emissiveTexture,
+    material.clearcoatTexture,
+    material.clearcoatRoughnessTexture,
+    material.opacityTexture,
+  ]) {
+    if (texture?.path) {
+      textureKeys.add(texture.path);
+    }
+  }
 }
 
 function getEffectiveUpAxis(stageUpAxis?: string | null): ViewUpAxis {
@@ -779,6 +875,10 @@ function normalizeUpAxis(axis?: string | null): ViewUpAxis {
 
 function formatUpAxis(axis: ViewUpAxis): string {
   return axis === "z" ? "Z Up" : "Y Up";
+}
+
+function formatCount(value: number | undefined): string {
+  return value === undefined ? "-" : value.toLocaleString();
 }
 
 function renderDefinitionList(values: Record<string, string>): string {
@@ -1105,6 +1205,7 @@ async function loadFiles(files: File[]): Promise<void> {
   setStatus("loading USD stage...", true);
   await waitForUiPaint();
   clearSceneGraph();
+  currentRendererStats = null;
   viewportElement!.classList.remove("has-stage");
 
   const rootFile = pickLikelyRootFile(files);
@@ -1132,12 +1233,15 @@ async function loadFiles(files: File[]): Promise<void> {
   applyUpAxisOptions();
   renderRuntimeStatus(runtime.status);
   const gaussianSplats = result.gaussianSplats ?? [];
+  let rendererStatsRenderables = result.renderables ?? [];
   if (result.usedReferenceHydraDriver) {
     viewport.frameCurrentStage();
   } else {
-    viewport.renderStage(result.renderables ?? [], result.summary, gaussianSplats.length > 0);
+    viewport.renderStage(rendererStatsRenderables, result.summary, gaussianSplats.length > 0);
   }
   viewport.renderGaussianSplats(gaussianSplats);
+  currentRendererStats = collectRendererStats(rendererStatsRenderables, gaussianSplats);
+  renderStageSummary(currentStageSummary);
   renderSceneGraph(runtime.getSceneGraph());
   viewportElement!.classList.add("has-stage");
 
@@ -1169,6 +1273,9 @@ async function loadFiles(files: File[]): Promise<void> {
       setStatus("decoding textures...", true);
       await waitForUiPaint();
       await viewport.updateRenderablesAsync(materializedRenderables);
+      rendererStatsRenderables = materializedRenderables;
+      currentRendererStats = collectRendererStats(rendererStatsRenderables, gaussianSplats);
+      renderStageSummary(currentStageSummary);
     }
   }
   isLoadingStage = false;

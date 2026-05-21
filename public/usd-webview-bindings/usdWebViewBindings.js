@@ -1,7 +1,5 @@
-import createUsdWebViewBindingsModule from "./usdWebViewBindingsModule.js";
-
-const _wasmBuildId = "2026-05-20h"; // bump on every WASM rebuild to bust browser cache
-const _wrapperBuildId = "scoped-payload-variant-refresh-2026-05-20a";
+const _wasmBuildId = "2026-05-21a"; // bump on every WASM rebuild to bust browser cache
+const _wrapperBuildId = "stage-renderer-stats-2026-05-21a";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
@@ -36,6 +34,8 @@ function ensureDirectory(module, path) {
 
 window.UsdWebViewBindings = {
   async createRuntime(options = {}) {
+    const { default: createUsdWebViewBindingsModule } =
+      await import(`./usdWebViewBindingsModule.js?v=${_wasmBuildId}`);
     const module = await createUsdWebViewBindingsModule({
       locateFile(path) {
         const base = options.locateFile?.(path) ?? path;

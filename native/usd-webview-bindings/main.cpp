@@ -1546,6 +1546,83 @@ _CountPrims(const UsdStageRefPtr& stage)
     return count;
 }
 
+struct StageAuthoredStats
+{
+    int meshPrimCount = 0;
+    int authoredPointCount = 0;
+    int authoredFaceCount = 0;
+    int materialPrimCount = 0;
+    int materialBindingCount = 0;
+    int textureAssetCount = 0;
+    int payloadPrimCount = 0;
+    int variantSetCount = 0;
+    int instancePrimCount = 0;
+};
+
+StageAuthoredStats
+_CollectStageAuthoredStats(const UsdStageRefPtr& stage)
+{
+    StageAuthoredStats stats;
+    std::unordered_set<std::string> textureAssetPaths;
+
+    for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot())) {
+        if (prim.IsPseudoRoot()) {
+            continue;
+        }
+
+        if (prim.HasAuthoredPayloads()) {
+            ++stats.payloadPrimCount;
+        }
+        if (prim.IsInstance()) {
+            ++stats.instancePrimCount;
+        }
+
+        std::vector<std::string> variantSetNames;
+        prim.GetVariantSets().GetNames(&variantSetNames);
+        stats.variantSetCount += static_cast<int>(variantSetNames.size());
+
+        if (prim.HasRelationship(TfToken("material:binding"))) {
+            ++stats.materialBindingCount;
+        }
+
+        if (prim.IsA<UsdShadeMaterial>()) {
+            ++stats.materialPrimCount;
+        }
+
+        if (prim.IsA<UsdShadeShader>()) {
+            UsdShadeShader shader(prim);
+            SdfAssetPath filePath;
+            UsdShadeInput fileInput = shader.GetInput(TfToken("file"));
+            if (fileInput && fileInput.Get(&filePath)) {
+                const std::string path = !filePath.GetResolvedPath().empty()
+                    ? filePath.GetResolvedPath()
+                    : filePath.GetAssetPath();
+                if (!path.empty()) {
+                    textureAssetPaths.insert(path);
+                }
+            }
+        }
+
+        if (prim.IsA<UsdGeomMesh>()) {
+            ++stats.meshPrimCount;
+            UsdGeomMesh mesh(prim);
+
+            VtArray<GfVec3f> points;
+            if (mesh.GetPointsAttr().Get(&points)) {
+                stats.authoredPointCount += static_cast<int>(points.size());
+            }
+
+            VtArray<int> faceVertexCounts;
+            if (mesh.GetFaceVertexCountsAttr().Get(&faceVertexCounts)) {
+                stats.authoredFaceCount += static_cast<int>(faceVertexCounts.size());
+            }
+        }
+    }
+
+    stats.textureAssetCount = static_cast<int>(textureAssetPaths.size());
+    return stats;
+}
+
 std::string
 _GetLayerIdentifier(const SdfLayerHandle& layer)
 {
@@ -3849,6 +3926,16 @@ OpenStage(const std::string& path, bool loadAllPayloads = true)
     result.set("rootLayerIdentifier", _GetLayerIdentifier(stage->GetRootLayer()));
     result.set("primCount", _CountPrims(stage));
     result.set("layerCount", static_cast<int>(stage->GetUsedLayers().size()));
+    const StageAuthoredStats stats = _CollectStageAuthoredStats(stage);
+    result.set("meshPrimCount", stats.meshPrimCount);
+    result.set("authoredPointCount", stats.authoredPointCount);
+    result.set("authoredFaceCount", stats.authoredFaceCount);
+    result.set("materialPrimCount", stats.materialPrimCount);
+    result.set("materialBindingCount", stats.materialBindingCount);
+    result.set("textureAssetCount", stats.textureAssetCount);
+    result.set("payloadPrimCount", stats.payloadPrimCount);
+    result.set("variantSetCount", stats.variantSetCount);
+    result.set("instancePrimCount", stats.instancePrimCount);
     result.set("timeCodesPerSecond", stage->GetTimeCodesPerSecond());
     result.set("startTimeCode", stage->GetStartTimeCode());
     result.set("endTimeCode", stage->GetEndTimeCode());
