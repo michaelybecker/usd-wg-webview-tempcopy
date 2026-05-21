@@ -164,6 +164,7 @@ export type UsdWebViewBindings = {
   createDataFile?: (path: string, data: Uint8Array) => void;
   extractRenderables?: (path: string) => RenderableMesh[];
   extractRenderablesWithMaterials?: (path: string) => RenderableMesh[];
+  extractRenderablesWithMaterialsUnderRoot?: (path: string, primPath: string) => RenderableMesh[];
   extractRenderablesAtTime?: (path: string, timeCode: number) => RenderableMesh[];
   extractHydraRenderablesAtTime?: (path: string, timeCode: number) => RenderableMesh[];
   extractHydraRenderableSnapshotAtTime?: (path: string, timeCode: number) => RenderableMesh[] | null;

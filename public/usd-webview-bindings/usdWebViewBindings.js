@@ -1,7 +1,7 @@
 import createUsdWebViewBindingsModule from "./usdWebViewBindingsModule.js";
 
-const _wasmBuildId = "2026-05-20g"; // bump on every WASM rebuild to bust browser cache
-const _wrapperBuildId = "attribute-array-preview-2026-05-20a";
+const _wasmBuildId = "2026-05-20h"; // bump on every WASM rebuild to bust browser cache
+const _wrapperBuildId = "scoped-payload-variant-refresh-2026-05-20a";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
@@ -125,6 +125,12 @@ window.UsdWebViewBindings = {
       },
       extractRenderablesWithMaterials(path) {
         return module.ExtractRenderablesWithMaterials(normalizePath(path));
+      },
+      extractRenderablesWithMaterialsUnderRoot(path, primPath) {
+        if (!module.ExtractRenderablesWithMaterialsUnderRoot) {
+          return module.ExtractRenderablesWithMaterials(normalizePath(path));
+        }
+        return module.ExtractRenderablesWithMaterialsUnderRoot(normalizePath(path), primPath);
       },
       extractRenderablesAtTime(path, timeCode) {
         return module.ExtractRenderablesAtTime(normalizePath(path), timeCode);

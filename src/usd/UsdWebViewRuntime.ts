@@ -236,6 +236,13 @@ export class UsdWebViewRuntime {
     return this.bindings.extractRenderablesWithMaterials(this.currentStagePath);
   }
 
+  extractRenderablesWithMaterialsUnderRoot(primPath: string): RenderableMesh[] {
+    if (!this.bindings?.extractRenderablesWithMaterialsUnderRoot || !this.currentStagePath) {
+      return this.extractRenderablesWithMaterials();
+    }
+    return this.bindings.extractRenderablesWithMaterialsUnderRoot(this.currentStagePath, primPath);
+  }
+
   extractGaussianSplats(): RenderableGaussianSplat[] {
     if (!this.bindings?.extractGaussianSplats || !this.currentStagePath) return [];
     return this.bindings.extractGaussianSplats(this.currentStagePath);

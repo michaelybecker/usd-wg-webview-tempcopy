@@ -47,6 +47,7 @@
 #include "pxr/usd/ar/resolvedPath.h"
 #include "pxr/usd/ar/resolver.h"
 #include "pxr/usd/sdf/layer.h"
+#include "pxr/usd/sdf/path.h"
 #include "pxr/usd/sdf/fileFormat.h"
 #include "pxr/usd/sdf/assetPath.h"
 #include "pxr/usd/sdf/primSpec.h"
@@ -3690,7 +3691,11 @@ GetSkelDebugInfo(
 }
 
 emscripten::val
-_ExtractRenderablesAtTime(const std::string& path, UsdTimeCode timeCode, bool includeMaterials)
+_ExtractRenderablesAtTime(
+    const std::string& path,
+    UsdTimeCode timeCode,
+    bool includeMaterials,
+    const SdfPath& rootPath = SdfPath::AbsoluteRootPath())
 {
     emscripten::val renderables = emscripten::val::array();
     UsdStageRefPtr stage = _GetOrOpenStage(path);
@@ -3716,9 +3721,16 @@ _ExtractRenderablesAtTime(const std::string& path, UsdTimeCode timeCode, bool in
         }
     }
     size_t renderableIndex = 0;
+    const bool collectAll =
+        rootPath == SdfPath::AbsoluteRootPath() || rootPath.IsEmpty();
 
     for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot())) {
         if (!prim.IsA<UsdGeomMesh>()) {
+            continue;
+        }
+        if (!collectAll &&
+            prim.GetPath() != rootPath &&
+            !prim.GetPath().HasPrefix(rootPath)) {
             continue;
         }
 
@@ -3801,6 +3813,19 @@ ExtractRenderablesWithMaterials(const std::string& path)
         path,
         stage ? UsdTimeCode(stage->GetStartTimeCode()) : UsdTimeCode::Default(),
         true);
+}
+
+emscripten::val
+ExtractRenderablesWithMaterialsUnderRoot(
+    const std::string& path,
+    const std::string& primPath)
+{
+    UsdStageRefPtr stage = _GetOrOpenStage(path);
+    return _ExtractRenderablesAtTime(
+        path,
+        stage ? UsdTimeCode(stage->GetStartTimeCode()) : UsdTimeCode::Default(),
+        true,
+        SdfPath(primPath));
 }
 
 emscripten::val
@@ -4011,6 +4036,7 @@ SetVariantSelection(
 
     UsdVariantSet vs = prim.GetVariantSets().GetVariantSet(variantSetName);
     if (!vs.IsValid()) return false;
+    if (vs.GetVariantSelection() == selection) return true;
 
     // Write the selection into the session layer (strongest arc, fully
     // in-memory). Unlike root-layer edits this does not touch the VFS,
@@ -4036,14 +4062,18 @@ SetPayloadLoaded(
     if (!stage) return false;
 
     const SdfPath path(primPath);
+    const UsdPrim prim = stage->GetPrimAtPath(path);
+    if (!prim) return false;
+    if (prim.IsLoaded() == loaded) return true;
+
     if (loaded) {
         stage->Load(path);
     } else {
         stage->Unload(path);
     }
     _InvalidateDerivedStageCaches(stagePath);
-    const UsdPrim prim = stage->GetPrimAtPath(path);
-    return prim && prim.IsLoaded() == loaded;
+    const UsdPrim updatedPrim = stage->GetPrimAtPath(path);
+    return updatedPrim && updatedPrim.IsLoaded() == loaded;
 }
 
 void
@@ -4054,16 +4084,20 @@ SetAllPayloadsLoaded(const std::string& stagePath, bool loaded)
 
     const auto traversePredicate =
         UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract;
+    SdfPathSet loadSet;
+    SdfPathSet unloadSet;
 
     for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot(), traversePredicate)) {
         if (prim.HasPayload()) {
             if (loaded) {
-                stage->Load(prim.GetPath());
+                loadSet.insert(prim.GetPath());
             } else {
-                stage->Unload(prim.GetPath());
+                unloadSet.insert(prim.GetPath());
             }
         }
     }
+    if (loadSet.empty() && unloadSet.empty()) return;
+    stage->LoadAndUnload(loadSet, unloadSet);
     _InvalidateDerivedStageCaches(stagePath);
 }
 
@@ -4797,6 +4831,7 @@ EMSCRIPTEN_BINDINGS(usdWebViewBindings)
     emscripten::function("GetSkelDebugInfo", &GetSkelDebugInfo);
     emscripten::function("ExtractRenderables", &ExtractRenderables);
     emscripten::function("ExtractRenderablesWithMaterials", &ExtractRenderablesWithMaterials);
+    emscripten::function("ExtractRenderablesWithMaterialsUnderRoot", &ExtractRenderablesWithMaterialsUnderRoot);
     emscripten::function("ExtractRenderablesAtTime", &ExtractRenderablesAtTime);
     emscripten::function("ExtractHydraRenderablesAtTime", &ExtractHydraRenderablesAtTime);
     emscripten::function("ExtractHydraRenderableSnapshotAtTime", &ExtractHydraRenderableSnapshotAtTime);

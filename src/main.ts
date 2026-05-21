@@ -525,7 +525,9 @@ async function applyVariantChange(
     viewport.renderGaussianSplats(runtime.extractGaussianSplats());
   }
 
-  const materializedRenderables = runtime.extractRenderablesWithMaterials();
+  const materializedRenderables = primPath
+    ? runtime.extractRenderablesWithMaterialsUnderRoot(primPath)
+    : runtime.extractRenderablesWithMaterials();
   if (materializedRenderables.length > 0) {
     await viewport.updateRenderablesAsync(materializedRenderables);
   }
