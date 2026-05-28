@@ -184,9 +184,10 @@ app.innerHTML = `
       </div>
       <div class="status-bar" id="statusBar" role="status" aria-live="polite">
         <span class="status-spinner" id="statusSpinner" hidden></span>
+        <span class="status-mode" id="materialXModeLabel" hidden>Experimental MaterialX / WebGPU</span>
         <span class="status-label" id="statusLabel">Idle</span>
       </div>
-      <input id="filePicker" type="file" multiple accept=".usd,.usda,.usdc,.usdz,.exr" style="display:none" />
+      <input id="filePicker" type="file" multiple accept=".usd,.usda,.usdc,.usdz,.mtlx,.zip,.png,.jpg,.jpeg,.webp,.svg,.exr" style="display:none" />
       <input id="folderPicker" type="file" webkitdirectory style="display:none" />
       <input id="hdriPicker" type="file" accept=".hdr,.exr" style="display:none" />
     </nav>
@@ -271,6 +272,7 @@ const playbarEnd = app.querySelector<HTMLElement>("#playbarEnd");
 const playbarScrubber = app.querySelector<HTMLInputElement>("#playbarScrubber");
 const statusSpinner = app.querySelector<HTMLElement>("#statusSpinner");
 const statusLabel = app.querySelector<HTMLElement>("#statusLabel");
+const materialXModeLabel = app.querySelector<HTMLElement>("#materialXModeLabel");
 const sceneGraphList = app.querySelector<HTMLElement>("#sceneGraphList");
 const attrPrimPath = app.querySelector<HTMLElement>("#attrPrimPath");
 const attrList = app.querySelector<HTMLElement>("#attrList");
@@ -297,6 +299,7 @@ if (
   !playbarScrubber ||
   !statusSpinner ||
   !statusLabel ||
+  !materialXModeLabel ||
   !sceneGraphList ||
   !attrPrimPath ||
   !attrList
@@ -375,6 +378,7 @@ let variantChangeSerial = 0;
 function setStatus(message: string, busy = false): void {
   statusLabel!.textContent = message;
   statusSpinner!.hidden = !busy;
+  materialXModeLabel!.hidden = !viewport.isExperimentalMaterialXMode();
 }
 
 function waitForUiPaint(): Promise<void> {

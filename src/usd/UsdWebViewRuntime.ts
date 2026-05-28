@@ -6,6 +6,7 @@ import type {
   PrimTransform,
   RenderableGaussianSplat,
   RenderableMesh,
+  RenderableTexture,
   RuntimeStatus,
   SceneGraphPrim,
   StageLoadRequest,
@@ -20,6 +21,7 @@ export class UsdWebViewRuntime {
   private bindings: UsdWebViewBindings | null = null;
   private hydraSyncDriver: HydraSyncDriver | null = null;
   private referenceHydraDriver: ReferenceHydraDriver | null = null;
+  private materialXResources: RenderableTexture[] = [];
   private useHydraSyncDriver = true;
   currentStagePath: string | null = null;
 
@@ -85,11 +87,20 @@ export class UsdWebViewRuntime {
       };
     }
 
+    const materialXResources: RenderableTexture[] = [];
     for (const file of request.files) {
       const path = file.webkitRelativePath || file.name;
       const data = new Uint8Array(await file.arrayBuffer());
       this.bindings.createDataFile(path, data);
+      if (isMaterialXResourcePath(path)) {
+        materialXResources.push({
+          path,
+          mimeType: mimeTypeForPath(path),
+          data,
+        });
+      }
     }
+    this.materialXResources = materialXResources;
 
     const rootPath = rootFile.webkitRelativePath || rootFile.name;
     const summary = await this.bindings.openStage(rootPath, request.loadAllPayloads ?? true);
@@ -138,7 +149,7 @@ export class UsdWebViewRuntime {
     // Fall back to legacy only if Hydra gives nothing (e.g. no Hydra support).
     let renderables = this.extractHydraRenderablesAtTime(normalizedSummary.startTimeCode ?? 0);
     if (renderables.length === 0) {
-      renderables = this.bindings.extractRenderables?.(rootPath) ?? [];
+      renderables = this.withMaterialXResources(this.bindings.extractRenderables?.(rootPath) ?? []);
     }
 
     return { summary: normalizedSummary, renderables, gaussianSplats };
@@ -155,7 +166,7 @@ export class UsdWebViewRuntime {
     if (!this.bindings?.extractRenderablesAtTime || !this.currentStagePath) {
       return [];
     }
-    return this.bindings.extractRenderablesAtTime(this.currentStagePath, timeCode);
+    return this.withMaterialXResources(this.bindings.extractRenderablesAtTime(this.currentStagePath, timeCode));
   }
 
   extractHydraRenderablesAtTime(timeCode: number): RenderableMesh[] {
@@ -166,26 +177,28 @@ export class UsdWebViewRuntime {
     }
     if (this.useHydraSyncDriver && this.hydraSyncDriver) {
       this.hydraSyncDriver.SetTime(timeCode);
-      return this.hydraSyncDriver.Draw();
+      return this.withMaterialXResources(this.hydraSyncDriver.Draw());
     }
     if (!this.bindings?.extractHydraRenderablesAtTime || !this.currentStagePath) {
       return [];
     }
-    return this.bindings.extractHydraRenderablesAtTime(this.currentStagePath, timeCode);
+    return this.withMaterialXResources(this.bindings.extractHydraRenderablesAtTime(this.currentStagePath, timeCode));
   }
 
   extractHydraRenderableSnapshotAtTime(timeCode: number): RenderableMesh[] | null {
     if (!this.bindings?.extractHydraRenderableSnapshotAtTime || !this.currentStagePath) {
       return null;
     }
-    return this.bindings.extractHydraRenderableSnapshotAtTime(this.currentStagePath, timeCode);
+    const renderables = this.bindings.extractHydraRenderableSnapshotAtTime(this.currentStagePath, timeCode);
+    return renderables ? this.withMaterialXResources(renderables) : null;
   }
 
   extractHydraRenderableSubtreeAtTime(primPath: string, timeCode: number): RenderableMesh[] | null {
     if (!this.bindings?.extractHydraRenderableSubtreeAtTime || !this.currentStagePath) {
       return null;
     }
-    return this.bindings.extractHydraRenderableSubtreeAtTime(this.currentStagePath, primPath, timeCode);
+    const renderables = this.bindings.extractHydraRenderableSubtreeAtTime(this.currentStagePath, primPath, timeCode);
+    return renderables ? this.withMaterialXResources(renderables) : null;
   }
 
   getStageTiming(): { start: number; end: number; fps: number } | null {
@@ -228,19 +241,21 @@ export class UsdWebViewRuntime {
 
   extractRenderables(): RenderableMesh[] {
     if (!this.bindings?.extractRenderables || !this.currentStagePath) return [];
-    return this.bindings.extractRenderables(this.currentStagePath);
+    return this.withMaterialXResources(this.bindings.extractRenderables(this.currentStagePath));
   }
 
   extractRenderablesWithMaterials(): RenderableMesh[] {
     if (!this.bindings?.extractRenderablesWithMaterials || !this.currentStagePath) return [];
-    return this.bindings.extractRenderablesWithMaterials(this.currentStagePath);
+    return this.withMaterialXResources(this.bindings.extractRenderablesWithMaterials(this.currentStagePath));
   }
 
   extractRenderablesWithMaterialsUnderRoot(primPath: string): RenderableMesh[] {
     if (!this.bindings?.extractRenderablesWithMaterialsUnderRoot || !this.currentStagePath) {
       return this.extractRenderablesWithMaterials();
     }
-    return this.bindings.extractRenderablesWithMaterialsUnderRoot(this.currentStagePath, primPath);
+    return this.withMaterialXResources(
+      this.bindings.extractRenderablesWithMaterialsUnderRoot(this.currentStagePath, primPath)
+    );
   }
 
   extractGaussianSplats(): RenderableGaussianSplat[] {
@@ -262,6 +277,43 @@ export class UsdWebViewRuntime {
     if (!this.bindings?.setAllPayloadsLoaded || !this.currentStagePath) return;
     this.bindings.setAllPayloadsLoaded(this.currentStagePath, loaded);
   }
+
+  private withMaterialXResources(renderables: RenderableMesh[] | null | undefined): RenderableMesh[] {
+    if (!renderables?.length || !this.materialXResources.length) {
+      return renderables ?? [];
+    }
+
+    for (const renderable of renderables) {
+      attachMaterialXResources(renderable.material, this.materialXResources);
+      for (const subset of renderable.materialSubsets ?? []) {
+        attachMaterialXResources(subset.material, this.materialXResources);
+      }
+    }
+    return renderables;
+  }
+}
+
+function attachMaterialXResources(
+  material: RenderableMesh["material"],
+  resources: RenderableTexture[]
+): void {
+  if (!material?.materialX) {
+    return;
+  }
+  material.materialX.resources = resources;
+}
+
+function isMaterialXResourcePath(path: string): boolean {
+  return /\.(png|jpe?g|webp|svg)$/i.test(path);
+}
+
+function mimeTypeForPath(path: string): string {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".svg")) return "image/svg+xml";
+  return "application/octet-stream";
 }
 
 function loadRuntimeEntrypoint(source: string): Promise<void> {

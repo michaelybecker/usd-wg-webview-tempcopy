@@ -88,12 +88,19 @@ export type RenderableMaterial = {
   clearcoatTexture?: RenderableTexture;
   clearcoatRoughnessTexture?: RenderableTexture;
   opacityTexture?: RenderableTexture;
+  materialX?: RenderableMaterialX;
 };
 
 export type RenderableTexture = {
   path: string;
   mimeType: string;
   data: Uint8Array;
+};
+
+export type RenderableMaterialX = RenderableTexture & {
+  materialName?: string;
+  resources?: RenderableTexture[];
+  report?: unknown;
 };
 
 export type StageLoadRequest = {

@@ -1,6 +1,11 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      "three/tsl": "three/src/Three.TSL.js",
+    },
+  },
   optimizeDeps: {
     exclude: ["@sparkjsdev/spark"],
   },

@@ -2611,6 +2611,12 @@ _GetMimeType(const std::string& path)
     if (extension == "exr") {
         return "image/x-exr";
     }
+    if (extension == "mtlx") {
+        return "application/mtlx+xml";
+    }
+    if (extension == "zip") {
+        return "application/zip";
+    }
     if (extension == "ktx2") {
         return "image/ktx2";
     }
@@ -2659,6 +2665,77 @@ _ReadTextureAsset(const std::string& path, const std::string& packageRootPath)
     texture.set("mimeType", _GetMimeType(resolvedAssetPath));
     texture.set("data", _BytesArray(bytes));
     return texture;
+}
+
+bool
+_IsMaterialXAssetPath(const std::string& path)
+{
+    const std::string lower = TfStringToLower(path);
+    return TfStringEndsWith(lower, ".mtlx") || TfStringEndsWith(lower, ".mtlx.zip");
+}
+
+bool
+_GetMaterialXSourceAsset(
+    const UsdShadeShader& shader,
+    SdfAssetPath* sourceAsset,
+    TfToken* subIdentifier)
+{
+    if (!shader || shader.GetImplementationSource() != UsdShadeTokens->sourceAsset) {
+        return false;
+    }
+
+    static const TfToken kSourceTypes[] = {
+        TfToken(),
+        TfToken("mtlx"),
+        TfToken("materialx"),
+    };
+
+    for (const TfToken& sourceType : kSourceTypes) {
+        SdfAssetPath candidate;
+        if (!shader.GetSourceAsset(&candidate, sourceType)) {
+            continue;
+        }
+
+        const std::string candidatePath = !candidate.GetResolvedPath().empty()
+            ? candidate.GetResolvedPath()
+            : candidate.GetAssetPath();
+        if (!_IsMaterialXAssetPath(candidatePath)) {
+            continue;
+        }
+
+        TfToken candidateSubIdentifier;
+        shader.GetSourceAssetSubIdentifier(&candidateSubIdentifier, sourceType);
+        *sourceAsset = candidate;
+        *subIdentifier = candidateSubIdentifier;
+        return true;
+    }
+
+    return false;
+}
+
+emscripten::val
+_ReadMaterialXAsset(
+    const UsdShadeShader& shader,
+    const std::string& packageRootPath)
+{
+    SdfAssetPath sourceAsset;
+    TfToken subIdentifier;
+    if (!_GetMaterialXSourceAsset(shader, &sourceAsset, &subIdentifier)) {
+        return emscripten::val::undefined();
+    }
+
+    const std::string rawPath = !sourceAsset.GetResolvedPath().empty()
+        ? sourceAsset.GetResolvedPath()
+        : sourceAsset.GetAssetPath();
+    emscripten::val asset = _ReadTextureAsset(rawPath, packageRootPath);
+    if (asset["data"].isUndefined()) {
+        return emscripten::val::undefined();
+    }
+
+    if (!subIdentifier.IsEmpty()) {
+        asset.set("materialName", subIdentifier.GetString());
+    }
+    return asset;
 }
 
 bool
@@ -2956,6 +3033,14 @@ _ExtractMaterial(
         materialValue.set("shaderId", shaderId.GetString());
     } else if (shaderPrim.GetAttribute(TfToken("info:id")).Get(&shaderId)) {
         materialValue.set("shaderId", shaderId.GetString());
+    }
+
+    if (shader) {
+        emscripten::val materialX = _ReadMaterialXAsset(shader, packageRootPath);
+        if (!materialX.isUndefined()) {
+            materialValue.set("materialX", materialX);
+            return materialValue;
+        }
     }
 
     // Scalar properties

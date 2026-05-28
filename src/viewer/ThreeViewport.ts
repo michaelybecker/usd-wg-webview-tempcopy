@@ -10,6 +10,7 @@ import {
   BufferGeometry,
   Group,
   HemisphereLight,
+  type Material,
   Mesh,
   MeshPhysicalMaterial,
   PMREMGenerator,
@@ -26,10 +27,12 @@ import {
   WebGLRenderer,
   WebGLRenderTarget,
 } from "three";
+import { WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { EXRLoader } from "three/examples/jsm/loaders/EXRLoader.js";
 import { HDRLoader } from "three/examples/jsm/loaders/HDRLoader.js";
+import { MaterialXLoader } from "three/examples/jsm/loaders/MaterialXLoader.js";
 import type { PrimTransform, RenderableMaterial, RenderableMesh, RenderableGaussianSplat, RenderableTexture, StageSummary } from "../usd/types";
 import { GaussianSplatRenderer, type SplatViewOptions } from "./GaussianSplatRenderer";
 
@@ -57,8 +60,8 @@ export type ReferenceHydraRenderInterface = {
 export class ThreeViewport {
   private readonly defaultBackground = new Color(0x181d21);
   private readonly camera: PerspectiveCamera;
-  private readonly controls: OrbitControls;
-  private readonly renderer: WebGLRenderer;
+  private controls: OrbitControls;
+  private renderer: WebGLRenderer | WebGPURenderer;
   private readonly scene: Scene;
   private readonly stageRoot = new Group();
   private readonly textureLoader = new TextureLoader();
@@ -66,6 +69,8 @@ export class ThreeViewport {
   private readonly hdrLoader = new HDRLoader();
   private readonly textureUrls: string[] = [];
   private readonly textureCache = new Map<string, Promise<Texture | null>>();
+  private readonly materialXLoader = new MaterialXLoader();
+  private readonly materialXResourceUrls = new Map<string, string>();
   private readonly managedTextures = new Set<Texture>();
   private readonly ambientLight: AmbientLight;
   private readonly hemisphereLight: HemisphereLight;
@@ -80,7 +85,9 @@ export class ThreeViewport {
   private readonly pathByMesh = new Map<Mesh, string>();
   private readonly highlightedMeshes = new Set<Mesh>();
   private readonly raycaster = new Raycaster();
-  private readonly splatRenderer: GaussianSplatRenderer;
+  private splatRenderer: GaussianSplatRenderer | null;
+  private experimentalMaterialXMode = false;
+  private webGpuInit: Promise<boolean> | null = null;
   private animationFrame = 0;
   private frameAnim: FrameAnim | null = null;
   private readonly resizeObserver: ResizeObserver;
@@ -102,16 +109,17 @@ export class ThreeViewport {
     this.camera = new PerspectiveCamera(50, 1, 0.01, 10000);
     this.camera.position.set(4, 3, 6);
 
-    this.renderer = new WebGLRenderer({ antialias: true, alpha: false });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.host.appendChild(this.renderer.domElement);
+    const renderer = new WebGLRenderer({ antialias: true, alpha: false });
+    this.renderer = renderer;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.host.appendChild(renderer.domElement);
 
-    const pmremGenerator = new PMREMGenerator(this.renderer);
+    const pmremGenerator = new PMREMGenerator(renderer);
     const roomEnvironment = new RoomEnvironment();
     this.defaultEnvironmentTarget = pmremGenerator.fromScene(roomEnvironment);
     pmremGenerator.dispose();
 
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls = new OrbitControls(this.camera, renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
 
@@ -125,7 +133,7 @@ export class ThreeViewport {
     this.applyDefaultEnvironment();
     this.scene.add(new AxesHelper(1.25));
 
-    this.splatRenderer = new GaussianSplatRenderer(this.renderer, this.scene);
+    this.splatRenderer = new GaussianSplatRenderer(renderer, this.scene);
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(this.host);
@@ -139,7 +147,11 @@ export class ThreeViewport {
       this.tickGameNavigation();
       this.tickFrameAnim();
       this.controls.update();
-      this.renderer.render(this.scene, this.camera);
+      if (this.isWebGpuRenderer()) {
+        void (this.renderer as WebGPURenderer).renderAsync(this.scene, this.camera);
+      } else {
+        this.renderer.render(this.scene, this.camera);
+      }
       this.animationFrame = window.requestAnimationFrame(render);
     };
 
@@ -151,7 +163,9 @@ export class ThreeViewport {
     this.resizeObserver.disconnect();
     this.removeGameNavigationHandlers();
     this.controls.dispose();
-    this.splatRenderer.dispose();
+    this.splatRenderer?.dispose();
+    this.materialXLoader.dispose();
+    this.revokeMaterialXResourceUrls();
     this.disposeHdriTexture();
     this.revokeTextureUrls();
     this.defaultEnvironmentTarget.dispose();
@@ -177,6 +191,7 @@ export class ThreeViewport {
       const material = this.createRenderableMaterials(renderable);
       const mesh = new Mesh(geometry, material);
       mesh.name = renderable.name || renderable.path;
+      mesh.userData.materialKey = this.getRenderableMaterialKey(renderable);
       mesh.userData.ptsLen  = renderable.points.length;
       mesh.userData.ptsFingerprint = this.geometryFingerprint(renderable.points);
       this.meshByPath.set(renderable.path, mesh);
@@ -199,10 +214,69 @@ export class ThreeViewport {
   }
 
   renderGaussianSplats(splats: RenderableGaussianSplat[]): void {
+    if (!this.splatRenderer) {
+      return;
+    }
     this.splatRenderer.renderSplats(splats);
     if (splats.length > 0 && this.meshByPath.size === 0) {
       this.frameSplats(splats);
     }
+  }
+
+  isExperimentalMaterialXMode(): boolean {
+    return this.experimentalMaterialXMode;
+  }
+
+  private async ensureWebGpuRenderer(): Promise<boolean> {
+    if (this.isWebGpuRenderer()) {
+      return true;
+    }
+    if (this.webGpuInit) {
+      return this.webGpuInit;
+    }
+
+    this.webGpuInit = this.switchToWebGpuRenderer();
+    return this.webGpuInit;
+  }
+
+  private async switchToWebGpuRenderer(): Promise<boolean> {
+    const previousRenderer = this.renderer;
+    const previousCanvas = previousRenderer.domElement;
+    try {
+      this.removeGameNavigationHandlers();
+      this.controls.dispose();
+
+      const renderer = new WebGPURenderer({ antialias: true, alpha: false });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.outputColorSpace = previousRenderer.outputColorSpace;
+      renderer.toneMapping = previousRenderer.toneMapping;
+      renderer.toneMappingExposure = previousRenderer.toneMappingExposure;
+      await renderer.init();
+
+      this.renderer = renderer;
+      previousCanvas.replaceWith(renderer.domElement);
+      previousRenderer.dispose();
+      this.controls = new OrbitControls(this.camera, renderer.domElement);
+      this.controls.enableDamping = true;
+      this.controls.dampingFactor = 0.08;
+      this.splatRenderer?.dispose();
+      this.splatRenderer = null;
+      this.installGameNavigationHandlers();
+      this.resize();
+      return true;
+    } catch (error) {
+      console.warn("Failed to initialize WebGPU renderer for MaterialX", error);
+      this.renderer = previousRenderer;
+      this.controls = new OrbitControls(this.camera, previousCanvas);
+      this.controls.enableDamping = true;
+      this.controls.dampingFactor = 0.08;
+      this.installGameNavigationHandlers();
+      return false;
+    }
+  }
+
+  private isWebGpuRenderer(): boolean {
+    return "isWebGPURenderer" in this.renderer;
   }
 
   createReferenceHydraRenderInterface(): ReferenceHydraRenderInterface {
@@ -267,7 +341,7 @@ export class ThreeViewport {
   }
 
   setSplatViewOptions(options: SplatViewOptions): void {
-    this.splatRenderer.setOptions(options);
+    this.splatRenderer?.setOptions(options);
   }
 
   setNavigationMode(mode: NavigationMode): void {
@@ -433,6 +507,7 @@ export class ThreeViewport {
         mesh.name = renderable.name || renderable.path;
         mesh.userData.ptsLen = renderable.points.length;
         mesh.userData.ptsFingerprint = this.geometryFingerprint(renderable.points);
+        mesh.userData.materialKey = this.getRenderableMaterialKey(renderable);
         this.meshByPath.set(renderable.path, mesh);
         this.pathByMesh.set(mesh, renderable.path);
         if (renderable.matrix.length === 16) {
@@ -450,6 +525,9 @@ export class ThreeViewport {
   // Never removes or rebuilds geometry — Hydra owns the geometry.
   async updateRenderablesAsync(renderables: RenderableMesh[]): Promise<void> {
     const textureLoads: Promise<void>[] = [];
+    if (renderables.some((renderable) => this.renderableHasMaterialX(renderable))) {
+      await this.ensureWebGpuRenderer();
+    }
     for (const renderable of renderables) {
       const existing = this.meshByPath.get(renderable.path);
       if (!existing) continue;
@@ -469,13 +547,13 @@ export class ThreeViewport {
     await Promise.all(textureLoads);
   }
 
-  private createRenderableMaterials(renderable: RenderableMesh): MeshPhysicalMaterial | MeshPhysicalMaterial[] {
+  private createRenderableMaterials(renderable: RenderableMesh): Material | Material[] {
     if (renderable.materialSubsets?.length) {
       return this.getUniqueSubsetMaterials(renderable).map((material) =>
-        this.createMaterial(renderable, material)
+        this.createMaterialForRenderable(renderable, material)
       );
     }
-    return this.createMaterial(renderable, renderable.material);
+    return this.createMaterialForRenderable(renderable, renderable.material);
   }
 
   private updateMeshMaterials(
@@ -486,24 +564,98 @@ export class ThreeViewport {
     const nextMaterials = this.createRenderableMaterials(renderable);
     const currentIsArray = Array.isArray(mesh.material);
     const nextIsArray = Array.isArray(nextMaterials);
+    const nextHasMaterialX = this.renderableHasMaterialX(renderable);
+    const currentHasMaterialX = this.meshHasMaterialXMaterial(mesh);
+    const nextMaterialKey = this.getRenderableMaterialKey(renderable);
     if (currentIsArray !== nextIsArray ||
-        (nextIsArray && (mesh.material as MeshPhysicalMaterial[]).length !== nextMaterials.length)) {
+        currentHasMaterialX !== nextHasMaterialX ||
+        mesh.userData.materialKey !== nextMaterialKey ||
+        (nextIsArray && (mesh.material as Material[]).length !== nextMaterials.length)) {
       this.disposeMeshMaterials(mesh);
       mesh.material = nextMaterials;
+      mesh.userData.materialKey = nextMaterialKey;
     }
 
     const materials = Array.isArray(mesh.material)
-      ? mesh.material as MeshPhysicalMaterial[]
-      : [mesh.material as MeshPhysicalMaterial];
+      ? mesh.material
+      : [mesh.material];
     const materialSources = renderable.materialSubsets?.length
       ? this.getUniqueSubsetMaterials(renderable)
       : [renderable.material];
 
     for (let index = 0; index < materials.length; ++index) {
-      this.updateMaterialProperties(materials[index], renderable, materialSources[index]);
-      this.applyMaterialTextures(materials[index], materialSources[index], textureLoads);
+      const material = materials[index];
+      if (material instanceof MeshPhysicalMaterial) {
+        this.updateMaterialProperties(material, renderable, materialSources[index]);
+        this.applyMaterialTextures(material, materialSources[index], textureLoads);
+      }
     }
     mesh.material = Array.isArray(mesh.material) ? materials : materials[0];
+  }
+
+  private createMaterialForRenderable(
+    renderable: RenderableMesh,
+    rmat = renderable.material
+  ): Material {
+    const materialXMaterial = this.createMaterialXMaterial(rmat);
+    return materialXMaterial ?? this.createMaterial(renderable, rmat);
+  }
+
+  private createMaterialXMaterial(rmat?: RenderableMaterial): Material | null {
+    const materialX = rmat?.materialX;
+    if (!materialX?.data?.length || !this.isWebGpuRenderer()) {
+      return null;
+    }
+
+    try {
+      const result = this.materialXLoader.parseBuffer(materialX.data, materialX.path, {
+        materialName: materialX.materialName,
+        archiveResolver: (uri: string) => this.resolveMaterialXResource(uri, materialX.path, materialX.resources ?? []),
+        uvSpace: "bottom-left",
+        issuePolicy: "warn",
+      });
+      materialX.report = result.report;
+      const material = materialX.materialName
+        ? result.materials[materialX.materialName]
+        : Object.values(result.materials)[0];
+      if (!material) {
+        return null;
+      }
+      material.side = DoubleSide;
+      material.userData.webviewMaterialX = true;
+      this.experimentalMaterialXMode = true;
+      return material;
+    } catch (error) {
+      console.warn(`Failed to load MaterialX material for ${rmat?.path ?? "material"}`, error);
+      return null;
+    }
+  }
+
+  private renderableHasMaterialX(renderable: RenderableMesh): boolean {
+    if (renderable.material?.materialX) {
+      return true;
+    }
+    return (renderable.materialSubsets ?? []).some((subset) => !!subset.material?.materialX);
+  }
+
+  private meshHasMaterialXMaterial(mesh: Mesh): boolean {
+    const materials = Array.isArray(mesh.material)
+      ? mesh.material
+      : [mesh.material];
+    return materials.some((material) => material.userData.webviewMaterialX === true);
+  }
+
+  private getRenderableMaterialKey(renderable: RenderableMesh): string {
+    const materials = renderable.materialSubsets?.length
+      ? this.getUniqueSubsetMaterials(renderable)
+      : [renderable.material];
+    return materials.map((material) => {
+      const materialX = material?.materialX;
+      if (materialX) {
+        return `mtlx:${materialX.path}:${materialX.materialName ?? ""}`;
+      }
+      return material?.path ?? "default";
+    }).join("|");
   }
 
   private createMaterial(
@@ -751,11 +903,13 @@ export class ThreeViewport {
   }
 
   private clearStage(): void {
-    this.splatRenderer.clear();
+    this.splatRenderer?.clear();
     this.meshByPath.clear();
     this.pathByMesh.clear();
     this.highlightedMeshes.clear();
     this.revokeTextureUrls();
+    this.revokeMaterialXResourceUrls();
+    this.experimentalMaterialXMode = false;
     this.stageRoot.rotation.set(0, 0, 0);
     this.stageRoot.traverse((object) => {
       if (object instanceof Mesh) {
@@ -774,7 +928,7 @@ export class ThreeViewport {
 
   private applyViewUpAxis(): void {
     this.stageRoot.rotation.set(this.viewUpAxis === "z" ? -Math.PI / 2 : 0, 0, 0);
-    this.splatRenderer.setViewUpAxis(this.viewUpAxis);
+    this.splatRenderer?.setViewUpAxis(this.viewUpAxis);
   }
 
   private applyTexture(
@@ -869,6 +1023,47 @@ export class ThreeViewport {
     return pending;
   }
 
+  private resolveMaterialXResource(
+    uri: string,
+    materialXPath: string,
+    resources: RenderableTexture[]
+  ): string | null {
+    const normalizedUri = normalizeAssetPath(uri);
+    const basePath = normalizeAssetPath(materialXPath).split("/").slice(0, -1).join("/");
+    const candidates = new Set([
+      normalizedUri,
+      basePath ? `${basePath}/${normalizedUri}` : normalizedUri,
+      normalizedUri.split("/").pop() ?? normalizedUri,
+    ]);
+
+    const resource = resources.find((candidate) => {
+      const path = normalizeAssetPath(candidate.path);
+      const basename = path.split("/").pop() ?? path;
+      return candidates.has(path) || candidates.has(basename);
+    });
+    if (!resource?.data?.length) {
+      return null;
+    }
+
+    const cached = this.materialXResourceUrls.get(resource.path);
+    if (cached) {
+      return cached;
+    }
+
+    const bytes = new ArrayBuffer(resource.data.byteLength);
+    new Uint8Array(bytes).set(resource.data);
+    const url = URL.createObjectURL(new Blob([bytes], { type: resource.mimeType }));
+    this.materialXResourceUrls.set(resource.path, url);
+    return url;
+  }
+
+  private revokeMaterialXResourceUrls(): void {
+    for (const url of this.materialXResourceUrls.values()) {
+      URL.revokeObjectURL(url);
+    }
+    this.materialXResourceUrls.clear();
+  }
+
   private isExrTexture(asset: RenderableTexture): boolean {
     return asset.path.toLowerCase().endsWith(".exr") || asset.mimeType === "image/x-exr";
   }
@@ -910,7 +1105,7 @@ export class ThreeViewport {
     this.hdriTexture = null;
   }
 
-  private disposeMaterialTextures(material: MeshPhysicalMaterial): void {
+  private disposeMaterialTextures(material: Material): void {
     const materialRecord = material as unknown as Record<string, unknown>;
     for (const slot of [
       "map",
@@ -934,8 +1129,8 @@ export class ThreeViewport {
 
   private disposeMeshMaterials(mesh: Mesh): void {
     const materials = Array.isArray(mesh.material)
-      ? mesh.material as MeshPhysicalMaterial[]
-      : [mesh.material as MeshPhysicalMaterial];
+      ? mesh.material
+      : [mesh.material];
     for (const material of materials) {
       this.disposeMaterialTextures(material);
       material.dispose();
@@ -988,12 +1183,14 @@ export class ThreeViewport {
 
   private applyHighlight(mesh: Mesh): void {
     const materials = Array.isArray(mesh.material)
-      ? mesh.material as MeshPhysicalMaterial[]
-      : [mesh.material as MeshPhysicalMaterial];
+      ? mesh.material
+      : [mesh.material];
+    const physicalMaterials = materials.filter((mat): mat is MeshPhysicalMaterial => mat instanceof MeshPhysicalMaterial);
+    if (!physicalMaterials.length) return;
     if (!mesh.userData.selEmissive) {
-      mesh.userData.selEmissive = materials.map((mat) => mat.emissive.clone());
+      mesh.userData.selEmissive = physicalMaterials.map((mat) => mat.emissive.clone());
     }
-    for (const mat of materials) {
+    for (const mat of physicalMaterials) {
       mat.emissive.set(0x3d1a00); // warm amber, visible on most materials
       mat.needsUpdate = true;
     }
@@ -1001,14 +1198,15 @@ export class ThreeViewport {
 
   private clearHighlight(mesh: Mesh): void {
     const materials = Array.isArray(mesh.material)
-      ? mesh.material as MeshPhysicalMaterial[]
-      : [mesh.material as MeshPhysicalMaterial];
+      ? mesh.material
+      : [mesh.material];
+    const physicalMaterials = materials.filter((mat): mat is MeshPhysicalMaterial => mat instanceof MeshPhysicalMaterial);
     const saved = mesh.userData.selEmissive as Color[] | undefined;
     if (saved) {
-      for (let index = 0; index < materials.length; ++index) {
+      for (let index = 0; index < physicalMaterials.length; ++index) {
         if (saved[index]) {
-          materials[index].emissive.copy(saved[index]);
-          materials[index].needsUpdate = true;
+          physicalMaterials[index].emissive.copy(saved[index]);
+          physicalMaterials[index].needsUpdate = true;
         }
       }
       mesh.userData.selEmissive = null;
@@ -1206,4 +1404,8 @@ export class ThreeViewport {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height, false);
   }
+}
+
+function normalizeAssetPath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "");
 }
