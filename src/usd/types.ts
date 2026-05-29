@@ -39,6 +39,8 @@ export type RenderableMesh = {
   indices: number[];
   uvs?: number[];
   matrix: number[];
+  instanceMatrices?: number[][];
+  instanceOwnerPath?: string;
   color?: number[];
   material?: RenderableMaterial;
   materialSubsets?: RenderableMaterialSubset[];

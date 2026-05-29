@@ -140,3 +140,44 @@ When working on materials from this point forward:
 
 That is the state of the repo today, and that is the next sensible refactor
 direction.
+
+## Open Issues
+
+### Native Normal Fidelity
+
+Some assets still show visibly faceted shading on the live Hydra/native mesh
+path even though the viewer recomputes normals in Three.js.
+
+This suggests the remaining issue is not “normals were never recalculated.” The
+more likely problem is that the current viewer fallback normal generation is too
+naive for some assets, and that we should prefer authored or Hydra-provided
+normals when available.
+
+Follow-up:
+
+1. Audit whether Hydra/native renderables can provide normals directly.
+2. If so, preserve authored/native normals end-to-end instead of always
+   regenerating them in the viewer.
+3. Keep the current Three-side normal recomputation only as a fallback when
+   normals are missing.
+
+### PointInstancer Rendering Gap
+
+The current native/Hydra renderable contract has started gaining
+`PointInstancer` support, but it still needs follow-up around interaction and
+composition behavior.
+
+In particular, there is already evidence that instancing and payload behavior
+can clash: if the instancer expands prototype meshes into visible renderables
+independently of payload state, unloading pawn payloads may appear to do
+nothing in the viewport even though the authored payload toggles changed.
+
+Follow-up:
+
+1. Verify that payload load/unload state is respected when instance prototypes
+   are sourced through `PointInstancer` expansion.
+2. Keep interaction semantics clear: scene graph selection should stay on the
+   real `PointInstancer` prim, while pick/frame/orbit can carry per-instance
+   sub-selection state.
+3. Continue verifying that material assignment and the future WebGPU path stay
+   aligned once instanced content and payload state both work together.

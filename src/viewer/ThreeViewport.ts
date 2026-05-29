@@ -11,7 +11,10 @@ import {
   Group,
   HemisphereLight,
   ImageLoader,
+  InstancedMesh,
+  MeshBasicMaterial,
   type Material,
+  Matrix4,
   Mesh,
   MeshPhysicalMaterial,
   PMREMGenerator,
@@ -45,6 +48,11 @@ interface FrameAnim {
   t: number; // 0 → 1
 }
 
+interface PickSelection {
+  path: string;
+  instanceId: number | null;
+}
+
 export type NavigationMode = "orbital" | "game";
 export type ViewUpAxis = "y" | "z";
 
@@ -59,6 +67,7 @@ export type ReferenceHydraRenderInterface = {
 };
 
 const TEXT_DECODER = new TextDecoder();
+const IDENTITY_MATRIX = new Matrix4();
 
 export class ThreeViewport {
   private readonly defaultBackground = new Color(0x181d21);
@@ -87,6 +96,8 @@ export class ThreeViewport {
   private readonly meshByPath = new Map<string, Mesh>();
   private readonly pathByMesh = new Map<Mesh, string>();
   private readonly highlightedMeshes = new Set<Mesh>();
+  private selectedInstance: PickSelection | null = null;
+  private selectedInstanceOverlays: Mesh[] = [];
   private readonly raycaster = new Raycaster();
   private splatRenderer: GaussianSplatRenderer | null;
   private experimentalMaterialXMode = false;
@@ -171,6 +182,7 @@ export class ThreeViewport {
     this.controls.dispose();
     this.splatRenderer?.dispose();
     this.materialXLoader.dispose();
+    this.clearSelectedInstanceOverlays();
     this.revokeMaterialXResourceUrls();
     this.disposeHdriTexture();
     this.revokeTextureUrls();
@@ -192,25 +204,15 @@ export class ThreeViewport {
     this.clearStage();
 
     for (const renderable of renderables) {
-      const geometry = this.buildGeometry(renderable);
-
-      const material = this.createRenderableMaterials(renderable);
-      const mesh = new Mesh(geometry, material);
+      const mesh = this.createSceneMesh(renderable);
       mesh.name = renderable.name || renderable.path;
       mesh.userData.materialKey = this.getRenderableMaterialKey(renderable);
       mesh.userData.ptsLen  = renderable.points.length;
       mesh.userData.ptsFingerprint = this.geometryFingerprint(renderable.points);
+      mesh.userData.instanceCount = renderable.instanceMatrices?.length ?? 0;
       this.meshByPath.set(renderable.path, mesh);
       this.pathByMesh.set(mesh, renderable.path);
-
-      if (renderable.matrix.length === 16) {
-        mesh.matrix.set(
-          ...(renderable.matrix as Parameters<typeof mesh.matrix.set>)
-        );
-        mesh.matrix.transpose();
-        mesh.matrixAutoUpdate = false;
-      }
-
+      this.applyRenderableTransform(mesh, renderable);
       this.stageRoot.add(mesh);
     }
 
@@ -494,11 +496,26 @@ export class ThreeViewport {
     for (const renderable of renderables) {
       const existing = this.meshByPath.get(renderable.path);
       if (existing) {
-        if (renderable.matrix.length === 16) {
-          existing.matrix.set(...(renderable.matrix as Parameters<typeof existing.matrix.set>));
-          existing.matrix.transpose();
-          existing.matrixAutoUpdate = false;
+        if (!this.sceneMeshMatchesRenderable(existing, renderable)) {
+          this.stageRoot.remove(existing);
+          existing.geometry.dispose();
+          this.disposeMeshMaterials(existing);
+          this.pathByMesh.delete(existing);
+          this.highlightedMeshes.delete(existing);
+
+          const replacement = this.createSceneMesh(renderable);
+          replacement.name = renderable.name || renderable.path;
+          replacement.userData.ptsLen = renderable.points.length;
+          replacement.userData.ptsFingerprint = this.geometryFingerprint(renderable.points);
+          replacement.userData.materialKey = this.getRenderableMaterialKey(renderable);
+          replacement.userData.instanceCount = renderable.instanceMatrices?.length ?? 0;
+          this.meshByPath.set(renderable.path, replacement);
+          this.pathByMesh.set(replacement, renderable.path);
+          this.applyRenderableTransform(replacement, renderable);
+          this.stageRoot.add(replacement);
+          continue;
         }
+        this.applyRenderableTransform(existing, renderable);
         const len = renderable.points.length;
         const fingerprint = this.geometryFingerprint(renderable.points);
         if (
@@ -517,20 +534,15 @@ export class ThreeViewport {
           this.applyHighlight(existing);
         }
       } else {
-        const geometry = this.buildGeometry(renderable);
-        const material = this.createRenderableMaterials(renderable);
-        const mesh = new Mesh(geometry, material);
+        const mesh = this.createSceneMesh(renderable);
         mesh.name = renderable.name || renderable.path;
         mesh.userData.ptsLen = renderable.points.length;
         mesh.userData.ptsFingerprint = this.geometryFingerprint(renderable.points);
         mesh.userData.materialKey = this.getRenderableMaterialKey(renderable);
+        mesh.userData.instanceCount = renderable.instanceMatrices?.length ?? 0;
         this.meshByPath.set(renderable.path, mesh);
         this.pathByMesh.set(mesh, renderable.path);
-        if (renderable.matrix.length === 16) {
-          mesh.matrix.set(...(renderable.matrix as Parameters<typeof mesh.matrix.set>));
-          mesh.matrix.transpose();
-          mesh.matrixAutoUpdate = false;
-        }
+        this.applyRenderableTransform(mesh, renderable);
         this.stageRoot.add(mesh);
       }
     }
@@ -575,6 +587,56 @@ export class ThreeViewport {
       );
     }
     return this.createMaterialForRenderable(renderable, renderable.material);
+  }
+
+  private createSceneMesh(renderable: RenderableMesh): Mesh {
+    const geometry = this.buildGeometry(renderable);
+    const material = this.createRenderableMaterials(renderable);
+    if (renderable.instanceMatrices?.length) {
+      const mesh = new InstancedMesh(geometry, material, renderable.instanceMatrices.length);
+      mesh.userData.instanceOwnerPath = renderable.instanceOwnerPath ?? renderable.path;
+      return mesh;
+    }
+    return new Mesh(geometry, material);
+  }
+
+  private sceneMeshMatchesRenderable(mesh: Mesh, renderable: RenderableMesh): boolean {
+    const instanceCount = renderable.instanceMatrices?.length ?? 0;
+    if (mesh instanceof InstancedMesh) {
+      return instanceCount > 0 && mesh.count === instanceCount;
+    }
+    return instanceCount === 0;
+  }
+
+  private applyRenderableTransform(mesh: Mesh, renderable: RenderableMesh): void {
+    if (renderable.matrix.length === 16) {
+      mesh.matrix.set(...(renderable.matrix as Parameters<typeof mesh.matrix.set>));
+      mesh.matrix.transpose();
+      mesh.matrixAutoUpdate = false;
+    } else {
+      mesh.matrix.identity();
+      mesh.matrixAutoUpdate = false;
+    }
+
+    if (!(mesh instanceof InstancedMesh)) {
+      return;
+    }
+
+    const instanceMatrices = renderable.instanceMatrices ?? [];
+    for (let index = 0; index < instanceMatrices.length; ++index) {
+      const values = instanceMatrices[index];
+      if (values?.length === 16) {
+        const matrix = new Matrix4();
+        matrix.set(...(values as Parameters<typeof matrix.set>));
+        matrix.transpose();
+        mesh.setMatrixAt(index, matrix);
+      } else {
+        mesh.setMatrixAt(index, IDENTITY_MATRIX);
+      }
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingBox();
+    mesh.computeBoundingSphere();
   }
 
   private updateMeshMaterials(
@@ -879,55 +941,72 @@ export class ThreeViewport {
     points: ArrayLike<number>,
     indices: ArrayLike<number>
   ): void {
-    const vertexNormals = new Float32Array(points.length);
+    const positions = this.faceExpandAttr(points, indices, 3);
+    const normals = new Float32Array(positions.length);
+    const weldedNormals = new Map<string, Vector3>();
+    const weldedOffsets = new Map<string, number[]>();
 
-    for (let i = 0; i + 2 < indices.length; i += 3) {
-      const ia = indices[i] * 3;
-      const ib = indices[i + 1] * 3;
-      const ic = indices[i + 2] * 3;
-      if (ic + 2 >= points.length) continue;
+    for (let i = 0; i + 8 < positions.length; i += 9) {
+      const ax = positions[i];
+      const ay = positions[i + 1];
+      const az = positions[i + 2];
+      const bx = positions[i + 3];
+      const by = positions[i + 4];
+      const bz = positions[i + 5];
+      const cx = positions[i + 6];
+      const cy = positions[i + 7];
+      const cz = positions[i + 8];
 
-      const ax = points[ia];
-      const ay = points[ia + 1];
-      const az = points[ia + 2];
-      const abx = points[ib] - ax;
-      const aby = points[ib + 1] - ay;
-      const abz = points[ib + 2] - az;
-      const acx = points[ic] - ax;
-      const acy = points[ic + 1] - ay;
-      const acz = points[ic + 2] - az;
+      const abx = bx - ax;
+      const aby = by - ay;
+      const abz = bz - az;
+      const acx = cx - ax;
+      const acy = cy - ay;
+      const acz = cz - az;
 
       const nx = aby * acz - abz * acy;
       const ny = abz * acx - abx * acz;
       const nz = abx * acy - aby * acx;
 
-      vertexNormals[ia] += nx;
-      vertexNormals[ia + 1] += ny;
-      vertexNormals[ia + 2] += nz;
-      vertexNormals[ib] += nx;
-      vertexNormals[ib + 1] += ny;
-      vertexNormals[ib + 2] += nz;
-      vertexNormals[ic] += nx;
-      vertexNormals[ic + 1] += ny;
-      vertexNormals[ic + 2] += nz;
-    }
-
-    for (let i = 0; i + 2 < vertexNormals.length; i += 3) {
-      const nx = vertexNormals[i];
-      const ny = vertexNormals[i + 1];
-      const nz = vertexNormals[i + 2];
-      const length = Math.hypot(nx, ny, nz);
-      if (length > 0) {
-        vertexNormals[i] = nx / length;
-        vertexNormals[i + 1] = ny / length;
-        vertexNormals[i + 2] = nz / length;
-      } else {
-        vertexNormals[i + 2] = 1;
+      for (let corner = 0; corner < 3; corner += 1) {
+        const offset = i + corner * 3;
+        const key = this.normalWeldKey(
+          positions[offset],
+          positions[offset + 1],
+          positions[offset + 2],
+        );
+        const accumulated = weldedNormals.get(key) ?? new Vector3();
+        accumulated.x += nx;
+        accumulated.y += ny;
+        accumulated.z += nz;
+        weldedNormals.set(key, accumulated);
+        const offsets = weldedOffsets.get(key) ?? [];
+        offsets.push(offset);
+        weldedOffsets.set(key, offsets);
       }
     }
 
-    geo.setAttribute("normal", new Float32BufferAttribute(this.faceExpandAttr(vertexNormals, indices, 3), 3));
+    for (const [key, accumulated] of weldedNormals) {
+      const length = accumulated.length();
+      if (length > 0) {
+        accumulated.divideScalar(length);
+      } else {
+        accumulated.set(0, 0, 1);
+      }
+      for (const offset of weldedOffsets.get(key) ?? []) {
+        normals[offset] = accumulated.x;
+        normals[offset + 1] = accumulated.y;
+        normals[offset + 2] = accumulated.z;
+      }
+    }
+
+    geo.setAttribute("normal", new Float32BufferAttribute(normals, 3));
     geo.attributes.normal.needsUpdate = true;
+  }
+
+  private normalWeldKey(x: number, y: number, z: number): string {
+    const precision = 1e5;
+    return `${Math.round(x * precision)}:${Math.round(y * precision)}:${Math.round(z * precision)}`;
   }
 
   private geometryFingerprint(points: ArrayLike<number>): string {
@@ -947,6 +1026,8 @@ export class ThreeViewport {
     this.meshByPath.clear();
     this.pathByMesh.clear();
     this.highlightedMeshes.clear();
+    this.selectedInstance = null;
+    this.clearSelectedInstanceOverlays();
     this.revokeTextureUrls();
     this.revokeMaterialXResourceUrls();
     this.experimentalMaterialXMode = false;
@@ -1190,6 +1271,7 @@ export class ThreeViewport {
   }
 
   pickPrim(clientX: number, clientY: number): string | null {
+    this.selectedInstance = null;
     const rect = this.host.getBoundingClientRect();
     const ndc = new Vector2(
       ((clientX - rect.left) / rect.width) * 2 - 1,
@@ -1199,7 +1281,16 @@ export class ThreeViewport {
     const hits = this.raycaster.intersectObjects(this.stageRoot.children, true);
     for (const hit of hits) {
       if (hit.object instanceof Mesh) {
-        const path = this.pathByMesh.get(hit.object);
+        const meshPath = this.pathByMesh.get(hit.object);
+        if (!meshPath) continue;
+        const ownerPath = hit.object.userData.instanceOwnerPath as string | undefined;
+        const path = ownerPath ?? meshPath;
+        this.selectedInstance = {
+          path,
+          instanceId: hit.object instanceof InstancedMesh && typeof hit.instanceId === "number"
+            ? hit.instanceId
+            : null,
+        };
         if (path) return path;
       }
     }
@@ -1207,6 +1298,10 @@ export class ThreeViewport {
   }
 
   setSelectedPrim(primPath: string | null): void {
+    if (!primPath || this.selectedInstance?.path !== primPath) {
+      this.selectedInstance = null;
+    }
+    this.clearSelectedInstanceOverlays();
     for (const mesh of this.highlightedMeshes) {
       this.clearHighlight(mesh);
     }
@@ -1215,45 +1310,94 @@ export class ThreeViewport {
     const prefix = primPath + "/";
     for (const [path, mesh] of this.meshByPath) {
       if (path === primPath || path.startsWith(prefix)) {
-        this.applyHighlight(mesh);
-        this.highlightedMeshes.add(mesh);
+        if (mesh instanceof InstancedMesh && mesh.userData.instanceOwnerPath === primPath) {
+          this.addSelectedInstanceOverlay(mesh, primPath);
+        } else {
+          this.applyHighlight(mesh);
+          this.highlightedMeshes.add(mesh);
+        }
       }
     }
   }
 
-  private applyHighlight(mesh: Mesh): void {
-    const materials = Array.isArray(mesh.material)
-      ? mesh.material
-      : [mesh.material];
-    const physicalMaterials = materials.filter((mat): mat is MeshPhysicalMaterial => mat instanceof MeshPhysicalMaterial);
-    if (!physicalMaterials.length) return;
-    if (!mesh.userData.selEmissive) {
-      mesh.userData.selEmissive = physicalMaterials.map((mat) => mat.emissive.clone());
+  private addSelectedInstanceOverlay(mesh: InstancedMesh, primPath: string): void {
+    const selected = this.selectedInstance;
+    if (!selected || selected.path !== primPath || selected.instanceId === null) {
+      return;
     }
-    for (const mat of physicalMaterials) {
+
+    const overlay = new Mesh(
+      mesh.geometry,
+      new MeshBasicMaterial({
+        color: 0xffb347,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.85,
+        depthWrite: false,
+      }),
+    );
+    const instanceMatrix = new Matrix4();
+    mesh.getMatrixAt(selected.instanceId, instanceMatrix);
+    overlay.matrix.copy(mesh.matrix).multiply(instanceMatrix);
+    overlay.matrixAutoUpdate = false;
+    this.scene.add(overlay);
+    this.selectedInstanceOverlays.push(overlay);
+  }
+
+  private clearSelectedInstanceOverlays(): void {
+    for (const overlay of this.selectedInstanceOverlays) {
+      this.scene.remove(overlay);
+      const materials = Array.isArray(overlay.material)
+        ? overlay.material
+        : [overlay.material];
+      for (const material of materials) {
+        material.dispose();
+      }
+    }
+    this.selectedInstanceOverlays = [];
+  }
+
+  private applyHighlight(mesh: Mesh): void {
+    const materials = this.getEmissiveMaterials(mesh);
+    if (!materials.length) return;
+    if (!mesh.userData.selEmissive) {
+      mesh.userData.selEmissive = materials.map((mat) => mat.emissive.clone());
+    }
+    for (const mat of materials) {
       mat.emissive.set(0x3d1a00); // warm amber, visible on most materials
       mat.needsUpdate = true;
     }
   }
 
   private clearHighlight(mesh: Mesh): void {
-    const materials = Array.isArray(mesh.material)
-      ? mesh.material
-      : [mesh.material];
-    const physicalMaterials = materials.filter((mat): mat is MeshPhysicalMaterial => mat instanceof MeshPhysicalMaterial);
+    const materials = this.getEmissiveMaterials(mesh);
     const saved = mesh.userData.selEmissive as Color[] | undefined;
     if (saved) {
-      for (let index = 0; index < physicalMaterials.length; ++index) {
+      for (let index = 0; index < materials.length; ++index) {
         if (saved[index]) {
-          physicalMaterials[index].emissive.copy(saved[index]);
-          physicalMaterials[index].needsUpdate = true;
+          materials[index].emissive.copy(saved[index]);
+          materials[index].needsUpdate = true;
         }
       }
       mesh.userData.selEmissive = null;
     }
   }
 
+  private getEmissiveMaterials(mesh: Mesh): Array<Material & { emissive: Color; needsUpdate: boolean }> {
+    const materials = Array.isArray(mesh.material)
+      ? mesh.material
+      : [mesh.material];
+    return materials.filter((mat): mat is Material & { emissive: Color; needsUpdate: boolean } => {
+      return "emissive" in mat && mat.emissive instanceof Color;
+    });
+  }
+
   framePrim(primPath: string): void {
+    const instanceBox = this.getSelectedInstanceBox(primPath);
+    if (instanceBox) {
+      this.animateToBox(instanceBox, true);
+      return;
+    }
     const box = new Box3();
     const prefix = primPath + "/";
     for (const [path, mesh] of this.meshByPath) {
@@ -1263,6 +1407,33 @@ export class ThreeViewport {
     }
     if (box.isEmpty()) return;
     this.animateToBox(box, true);
+  }
+
+  private getSelectedInstanceBox(primPath: string): Box3 | null {
+    const selected = this.selectedInstance;
+    if (!selected || selected.path !== primPath || selected.instanceId === null) {
+      return null;
+    }
+
+    const box = new Box3();
+    for (const mesh of this.meshByPath.values()) {
+      if (!(mesh instanceof InstancedMesh) || mesh.userData.instanceOwnerPath !== primPath) {
+        continue;
+      }
+      if (!mesh.geometry.boundingBox) {
+        mesh.geometry.computeBoundingBox();
+      }
+      const bounds = mesh.geometry.boundingBox;
+      if (!bounds) {
+        return null;
+      }
+      const instanceMatrix = new Matrix4();
+      mesh.getMatrixAt(selected.instanceId, instanceMatrix);
+      const worldMatrix = new Matrix4().multiplyMatrices(mesh.matrixWorld, instanceMatrix);
+      box.union(bounds.clone().applyMatrix4(worldMatrix));
+    }
+
+    return box.isEmpty() ? null : box;
   }
 
   private tickFrameAnim(): void {
