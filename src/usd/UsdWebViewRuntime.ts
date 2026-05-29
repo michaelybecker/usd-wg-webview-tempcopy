@@ -14,7 +14,7 @@ import type {
   StageSummary,
 } from "./types";
 
-const RUNTIME_ENTRYPOINT = "/usd-webview-bindings/usdWebViewBindings.js?v=stage-renderer-stats-2026-05-21a";
+const RUNTIME_ENTRYPOINT = "/usd-webview-bindings/usdWebViewBindings.js?v=mtlx-flipv-default-2026-05-28f";
 const RUNTIME_ASSET_ROOT = "/usd-webview-bindings/";
 
 export class UsdWebViewRuntime {

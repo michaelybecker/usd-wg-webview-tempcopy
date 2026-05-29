@@ -10,6 +10,7 @@ import {
   BufferGeometry,
   Group,
   HemisphereLight,
+  ImageLoader,
   type Material,
   Mesh,
   MeshPhysicalMaterial,
@@ -57,6 +58,8 @@ export type ReferenceHydraRenderInterface = {
   createRPrim: (type: string, id: string) => ReferenceHydraRPrim;
 };
 
+const TEXT_DECODER = new TextDecoder();
+
 export class ThreeViewport {
   private readonly defaultBackground = new Color(0x181d21);
   private readonly camera: PerspectiveCamera;
@@ -101,6 +104,7 @@ export class ThreeViewport {
   private readonly gameRight = new Vector3();
   private readonly gameMove = new Vector3();
   private readonly gameUp = new Vector3(0, 1, 0);
+  private materialXFlipV = true;
 
   constructor(private readonly host: HTMLElement) {
     this.scene = new Scene();
@@ -113,6 +117,8 @@ export class ThreeViewport {
     this.renderer = renderer;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.host.appendChild(renderer.domElement);
+
+    this.materialXLoader.manager.addHandler(/^data:image\//, new ImageLoader(this.materialXLoader.manager));
 
     const pmremGenerator = new PMREMGenerator(renderer);
     const roomEnvironment = new RoomEnvironment();
@@ -225,6 +231,16 @@ export class ThreeViewport {
 
   isExperimentalMaterialXMode(): boolean {
     return this.experimentalMaterialXMode;
+  }
+
+  setMaterialXFlipV(enabled: boolean): void {
+    this.materialXFlipV = enabled;
+  }
+
+  async prepareForRenderables(renderables: RenderableMesh[]): Promise<void> {
+    if (renderables.some((renderable) => this.renderableHasMaterialX(renderable))) {
+      await this.ensureWebGpuRenderer();
+    }
   }
 
   private async ensureWebGpuRenderer(): Promise<boolean> {
@@ -533,12 +549,17 @@ export class ThreeViewport {
       if (!existing) continue;
 
       // Hydra skips UV extraction for skinned meshes — inject from legacy data.
-      if (!existing.geometry.attributes.uv && renderable.uvs?.length) {
-        const faceUvs = this.faceExpandAttr(renderable.uvs as number[], renderable.indices as number[], 2);
-        if (existing.geometry.attributes.position?.count === faceUvs.length / 2) {
-          const uvAttr = new Float32BufferAttribute(faceUvs, 2);
-          existing.geometry.setAttribute("uv", uvAttr);
-          existing.geometry.setAttribute("uv1", uvAttr.clone());
+      if (renderable.uvs?.length) {
+        const shouldRewriteUvs =
+          !existing.geometry.attributes.uv || this.renderableHasMaterialX(renderable);
+        if (shouldRewriteUvs) {
+          const faceUvs = this.faceExpandAttr(renderable.uvs as number[], renderable.indices as number[], 2);
+          if (existing.geometry.attributes.position?.count === faceUvs.length / 2) {
+            const uvAttr = new Float32BufferAttribute(faceUvs, 2);
+            this.applyMaterialXUvOptions(uvAttr, renderable);
+            existing.geometry.setAttribute("uv", uvAttr);
+            existing.geometry.setAttribute("uv1", uvAttr.clone());
+          }
         }
       }
       this.applyGeometryGroups(existing.geometry, renderable);
@@ -603,14 +624,22 @@ export class ThreeViewport {
 
   private createMaterialXMaterial(rmat?: RenderableMaterial): Material | null {
     const materialX = rmat?.materialX;
-    if (!materialX?.data?.length || !this.isWebGpuRenderer()) {
+    if (!materialX) {
+      return null;
+    }
+    if (!materialX.data?.length) {
+      return null;
+    }
+    if (!this.isWebGpuRenderer()) {
       return null;
     }
 
     try {
-      const result = this.materialXLoader.parseBuffer(materialX.data, materialX.path, {
+      const materialXText = TEXT_DECODER.decode(materialX.data);
+      const result = this.materialXLoader.parse(materialXText, {
         materialName: materialX.materialName,
         archiveResolver: (uri: string) => this.resolveMaterialXResource(uri, materialX.path, materialX.resources ?? []),
+        path: materialX.path,
         uvSpace: "bottom-left",
         issuePolicy: "warn",
       });
@@ -625,8 +654,7 @@ export class ThreeViewport {
       material.userData.webviewMaterialX = true;
       this.experimentalMaterialXMode = true;
       return material;
-    } catch (error) {
-      console.warn(`Failed to load MaterialX material for ${rmat?.path ?? "material"}`, error);
+    } catch {
       return null;
     }
   }
@@ -652,7 +680,7 @@ export class ThreeViewport {
     return materials.map((material) => {
       const materialX = material?.materialX;
       if (materialX) {
-        return `mtlx:${materialX.path}:${materialX.materialName ?? ""}`;
+        return `mtlx:${this.materialXFlipV ? "flipv" : "noflipv"}:${materialX.path}:${materialX.materialName ?? ""}`;
       }
       return material?.path ?? "default";
     }).join("|");
@@ -792,6 +820,7 @@ export class ThreeViewport {
     geo.setAttribute("position", new Float32BufferAttribute(this.faceExpandAttr(points, indices, 3), 3));
     if (uvs?.length) {
       const uvAttr = new Float32BufferAttribute(this.faceExpandAttr(uvs, indices, 2), 2);
+      this.applyMaterialXUvOptions(uvAttr, renderable);
       geo.setAttribute("uv", uvAttr);
       geo.setAttribute("uv1", uvAttr.clone());
     }
@@ -816,6 +845,17 @@ export class ThreeViewport {
       }
       geo.addGroup(subset.start, subset.count, slots.get(key) ?? 0);
     }
+  }
+
+  private applyMaterialXUvOptions(uvAttr: Float32BufferAttribute, renderable: RenderableMesh): void {
+    if (!this.materialXFlipV || !this.renderableHasMaterialX(renderable)) {
+      return;
+    }
+
+    for (let index = 0; index < uvAttr.count; index += 1) {
+      uvAttr.setY(index, 1 - uvAttr.getY(index));
+    }
+    uvAttr.needsUpdate = true;
   }
 
   private getUniqueSubsetMaterials(renderable: RenderableMesh): (RenderableMaterial | undefined)[] {
@@ -1050,16 +1090,16 @@ export class ThreeViewport {
       return cached;
     }
 
-    const bytes = new ArrayBuffer(resource.data.byteLength);
-    new Uint8Array(bytes).set(resource.data);
-    const url = URL.createObjectURL(new Blob([bytes], { type: resource.mimeType }));
+    const url = createDataUrl(resource.data, resource.mimeType);
     this.materialXResourceUrls.set(resource.path, url);
     return url;
   }
 
   private revokeMaterialXResourceUrls(): void {
     for (const url of this.materialXResourceUrls.values()) {
-      URL.revokeObjectURL(url);
+      if (url.startsWith("blob:")) {
+        URL.revokeObjectURL(url);
+      }
     }
     this.materialXResourceUrls.clear();
   }
@@ -1408,4 +1448,16 @@ export class ThreeViewport {
 
 function normalizeAssetPath(path: string): string {
   return path.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function createDataUrl(bytes: Uint8Array, mimeType: string): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return `data:${mimeType};base64,${btoa(binary)}`;
 }

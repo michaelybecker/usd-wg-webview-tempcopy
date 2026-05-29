@@ -109,6 +109,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <map>
 #include <memory>
@@ -144,6 +145,7 @@ struct HydraMeshUpdate
     std::vector<float> points;
     std::vector<int> triangleIndices;
     std::vector<float> uvs;
+    bool expandedToFaceVertices = false;
     GfMatrix4d matrix;
     int pointComputationCount = 0;
     int sceneIndexChildCount = 0;
@@ -2678,7 +2680,8 @@ bool
 _GetMaterialXSourceAsset(
     const UsdShadeShader& shader,
     SdfAssetPath* sourceAsset,
-    TfToken* subIdentifier)
+    TfToken* subIdentifier,
+    TfToken* sourceTypeOut = nullptr)
 {
     if (!shader || shader.GetImplementationSource() != UsdShadeTokens->sourceAsset) {
         return false;
@@ -2707,6 +2710,9 @@ _GetMaterialXSourceAsset(
         shader.GetSourceAssetSubIdentifier(&candidateSubIdentifier, sourceType);
         *sourceAsset = candidate;
         *subIdentifier = candidateSubIdentifier;
+        if (sourceTypeOut) {
+            *sourceTypeOut = sourceType;
+        }
         return true;
     }
 
@@ -2735,6 +2741,67 @@ _ReadMaterialXAsset(
     if (!subIdentifier.IsEmpty()) {
         asset.set("materialName", subIdentifier.GetString());
     }
+    return asset;
+}
+
+bool
+_GetMaterialXReferenceForMaterialPrim(
+    const UsdPrim& materialPrim,
+    SdfAssetPath* sourceAsset)
+{
+    if (!materialPrim || !sourceAsset) {
+        return false;
+    }
+
+    for (UsdPrim prim = materialPrim; prim; prim = prim.GetParent()) {
+        const std::vector<SdfPrimSpecHandle>& primStack = prim.GetPrimStack();
+        for (const SdfPrimSpecHandle& primSpec : primStack) {
+            if (!primSpec) {
+                continue;
+            }
+
+            const std::vector<SdfReference>& references =
+                primSpec->GetReferenceList().GetAppliedItems();
+            for (const SdfReference& reference : references) {
+                const std::string assetPath = reference.GetAssetPath();
+                if (_IsMaterialXAssetPath(assetPath)) {
+                    std::string resolvedAssetPath = assetPath;
+                    if (SdfLayerHandle layer = primSpec->GetLayer()) {
+                        const std::string anchoredAssetPath =
+                            layer->ComputeAbsolutePath(assetPath);
+                        if (!anchoredAssetPath.empty()) {
+                            resolvedAssetPath = anchoredAssetPath;
+                        }
+                    }
+                    *sourceAsset = SdfAssetPath(assetPath, resolvedAssetPath);
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+emscripten::val
+_ReadMaterialXAssetFromMaterialPrim(
+    const UsdPrim& materialPrim,
+    const std::string& packageRootPath)
+{
+    SdfAssetPath sourceAsset;
+    if (!_GetMaterialXReferenceForMaterialPrim(materialPrim, &sourceAsset)) {
+        return emscripten::val::undefined();
+    }
+
+    const std::string rawPath = !sourceAsset.GetResolvedPath().empty()
+        ? sourceAsset.GetResolvedPath()
+        : sourceAsset.GetAssetPath();
+    emscripten::val asset = _ReadTextureAsset(rawPath, packageRootPath);
+    if (asset["data"].isUndefined()) {
+        return emscripten::val::undefined();
+    }
+
+    asset.set("materialName", materialPrim.GetName().GetString());
     return asset;
 }
 
@@ -3041,6 +3108,12 @@ _ExtractMaterial(
             materialValue.set("materialX", materialX);
             return materialValue;
         }
+    }
+
+    emscripten::val materialX = _ReadMaterialXAssetFromMaterialPrim(materialPrim, packageRootPath);
+    if (!materialX.isUndefined()) {
+        materialValue.set("materialX", materialX);
+        return materialValue;
     }
 
     // Scalar properties
@@ -4586,6 +4659,7 @@ _ExpandHydraUpdateToFaceVertices(
     update->points = std::move(expandedPoints);
     update->triangleIndices = std::move(expandedIndices);
     update->uvs = std::move(expandedUvs);
+    update->expandedToFaceVertices = true;
     return true;
 }
 
@@ -4666,12 +4740,29 @@ _HydraCollectorUpdatesToRenderableArray(
         return result;
     }
 
+    UsdShadeMaterialBindingAPI::BindingsCache bindingsCache;
+    UsdShadeMaterialBindingAPI::CollectionQueryCache collectionQueryCache;
+    std::string packageRootPath = _GetLayerIdentifier(driver->stage->GetRootLayer());
+    if (ArIsPackageRelativePath(packageRootPath)) {
+        const size_t bracketPos = packageRootPath.find('[');
+        if (bracketPos != std::string::npos) {
+            packageRootPath = packageRootPath.substr(0, bracketPos);
+        }
+    }
+
     size_t index = 0;
     for (auto& entry : driver->collector.updates) {
         HydraMeshUpdate& update = entry.second;
         UsdPrim prim = driver->stage->GetPrimAtPath(SdfPath(update.path));
         if (!prim || !prim.IsA<UsdGeomMesh>()) {
             continue;
+        }
+        if (!update.expandedToFaceVertices) {
+            _ExpandHydraUpdateToFaceVertices(
+                driver->stage,
+                prim.GetPath(),
+                UsdTimeCode(timeCode),
+                &update);
         }
 
         emscripten::val renderable = emscripten::val::object();
@@ -4683,6 +4774,15 @@ _HydraCollectorUpdatesToRenderableArray(
             renderable.set("uvs", _FloatArray(update.uvs));
         }
         renderable.set("matrix", _MatrixArray(update.matrix));
+        emscripten::val fallbackColor = _ColorArray(UsdGeomMesh(prim));
+        renderable.set("color", fallbackColor);
+        emscripten::val material = _ExtractMaterial(
+            prim,
+            packageRootPath,
+            &bindingsCache,
+            &collectionQueryCache,
+            fallbackColor);
+        renderable.set("material", material);
         renderable.set("pointComputationCount", update.pointComputationCount);
         renderable.set("sceneIndexChildCount", update.sceneIndexChildCount);
         renderable.set("sceneIndexHasSkelRoot", update.sceneIndexHasSkelRoot);
