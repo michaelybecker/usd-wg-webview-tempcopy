@@ -151,6 +151,7 @@ app.innerHTML = `
                   <li><button class="menu-option" data-splat-detail="2">Smooth</button></li>
                 </ul>
               </li>
+              <li><button class="menu-option" id="menuMaterialXFlipV">MaterialX Flip V</button></li>
             </ul>
           </li>
           <li class="menu-submenu">
@@ -184,9 +185,10 @@ app.innerHTML = `
       </div>
       <div class="status-bar" id="statusBar" role="status" aria-live="polite">
         <span class="status-spinner" id="statusSpinner" hidden></span>
+        <span class="status-mode" id="materialXModeLabel" hidden>Experimental MaterialX / WebGPU</span>
         <span class="status-label" id="statusLabel">Idle</span>
       </div>
-      <input id="filePicker" type="file" multiple accept=".usd,.usda,.usdc,.usdz,.exr" style="display:none" />
+      <input id="filePicker" type="file" multiple accept=".usd,.usda,.usdc,.usdz,.mtlx,.zip,.png,.jpg,.jpeg,.webp,.svg,.exr" style="display:none" />
       <input id="folderPicker" type="file" webkitdirectory style="display:none" />
       <input id="hdriPicker" type="file" accept=".hdr,.exr" style="display:none" />
     </nav>
@@ -271,6 +273,7 @@ const playbarEnd = app.querySelector<HTMLElement>("#playbarEnd");
 const playbarScrubber = app.querySelector<HTMLInputElement>("#playbarScrubber");
 const statusSpinner = app.querySelector<HTMLElement>("#statusSpinner");
 const statusLabel = app.querySelector<HTMLElement>("#statusLabel");
+const materialXModeLabel = app.querySelector<HTMLElement>("#materialXModeLabel");
 const sceneGraphList = app.querySelector<HTMLElement>("#sceneGraphList");
 const attrPrimPath = app.querySelector<HTMLElement>("#attrPrimPath");
 const attrList = app.querySelector<HTMLElement>("#attrList");
@@ -297,6 +300,7 @@ if (
   !playbarScrubber ||
   !statusSpinner ||
   !statusLabel ||
+  !materialXModeLabel ||
   !sceneGraphList ||
   !attrPrimPath ||
   !attrList
@@ -346,6 +350,7 @@ let outputColorSpace: OutputColorSpaceChoice = SRGBColorSpace;
 let toneMappingChoice: ToneMappingChoice = "none";
 let toneMappingExposure = 1;
 let lightingMode: LightingMode = "default";
+let materialXFlipV = true;
 let hdriMapVisible = true;
 let hdriIntensity = 1;
 let hdriMapLabel: string | null = null;
@@ -375,6 +380,7 @@ let variantChangeSerial = 0;
 function setStatus(message: string, busy = false): void {
   statusLabel!.textContent = message;
   statusSpinner!.hidden = !busy;
+  materialXModeLabel!.hidden = !viewport.isExperimentalMaterialXMode();
 }
 
 function waitForUiPaint(): Promise<void> {
@@ -964,6 +970,25 @@ function applyColorSpaceOptions(): void {
   }
 }
 
+async function applyMaterialXOptions(): Promise<void> {
+  viewport.setMaterialXFlipV(materialXFlipV);
+  app!.querySelector<HTMLButtonElement>("#menuMaterialXFlipV")
+    ?.classList.toggle("menu-option--checked", materialXFlipV);
+
+  if (!runtime.currentStagePath || isLoadingStage) {
+    return;
+  }
+
+  const materializedRenderables = runtime.extractRenderablesWithMaterials();
+  if (materializedRenderables.length === 0) {
+    return;
+  }
+
+  setStatus("reloading MaterialX...", true);
+  await viewport.updateRenderablesAsync(materializedRenderables);
+  setStatus("Ready", false);
+}
+
 function toneMappingForChoice(choice: ToneMappingChoice): ToneMapping {
   switch (choice) {
     case "linear":
@@ -1049,6 +1074,11 @@ for (const button of app.querySelectorAll<HTMLButtonElement>("[data-output-color
     applyColorSpaceOptions();
   });
 }
+
+app.querySelector("#menuMaterialXFlipV")?.addEventListener("click", () => {
+  materialXFlipV = !materialXFlipV;
+  void applyMaterialXOptions();
+});
 
 for (const button of app.querySelectorAll<HTMLButtonElement>("[data-tone-mapping]")) {
   button.addEventListener("click", () => {
@@ -1153,6 +1183,7 @@ applySplatViewOptions();
 applyNavigationOptions();
 applyUpAxisOptions();
 applyColorSpaceOptions();
+void applyMaterialXOptions();
 applyToneMappingOptions();
 applyLightingOptions();
 applyPayloadOpenOptions();
@@ -1234,6 +1265,7 @@ async function loadFiles(files: File[]): Promise<void> {
   renderRuntimeStatus(runtime.status);
   const gaussianSplats = result.gaussianSplats ?? [];
   let rendererStatsRenderables = result.renderables ?? [];
+  await viewport.prepareForRenderables(rendererStatsRenderables);
   if (result.usedReferenceHydraDriver) {
     viewport.frameCurrentStage();
   } else {
@@ -1268,7 +1300,9 @@ async function loadFiles(files: File[]): Promise<void> {
   if (result.usedReferenceHydraDriver || (result.renderables?.length ?? 0) > 0) {
     setStatus("loading materials...", true);
     await waitForUiPaint();
-    const materializedRenderables = runtime.extractRenderablesWithMaterials();
+    const materializedRenderables = result.usedReferenceHydraDriver
+      ? runtime.extractRenderablesWithMaterials()
+      : rendererStatsRenderables;
     if (materializedRenderables.length > 0) {
       setStatus("decoding textures...", true);
       await waitForUiPaint();

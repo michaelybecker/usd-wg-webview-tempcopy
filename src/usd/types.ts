@@ -39,6 +39,8 @@ export type RenderableMesh = {
   indices: number[];
   uvs?: number[];
   matrix: number[];
+  instanceMatrices?: number[][];
+  instanceOwnerPath?: string;
   color?: number[];
   material?: RenderableMaterial;
   materialSubsets?: RenderableMaterialSubset[];
@@ -88,12 +90,19 @@ export type RenderableMaterial = {
   clearcoatTexture?: RenderableTexture;
   clearcoatRoughnessTexture?: RenderableTexture;
   opacityTexture?: RenderableTexture;
+  materialX?: RenderableMaterialX;
 };
 
 export type RenderableTexture = {
   path: string;
   mimeType: string;
   data: Uint8Array;
+};
+
+export type RenderableMaterialX = RenderableTexture & {
+  materialName?: string;
+  resources?: RenderableTexture[];
+  report?: unknown;
 };
 
 export type StageLoadRequest = {

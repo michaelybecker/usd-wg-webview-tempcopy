@@ -27,25 +27,34 @@ From the repository root:
 ```sh
 source /path/to/emsdk/emsdk_env.sh
 
-emcmake cmake -S native/usd-webview-bindings -B build/usd-webview-bindings \
+# On this machine cmake lives in Homebrew, not in the emsdk environment.
+# Use the absolute path if `cmake` is not already on PATH.
+export CMAKE_BIN=/opt/homebrew/bin/cmake
+
+emcmake $CMAKE_BIN -S native/usd-webview-bindings -B build/usd-webview-bindings \
   -DCMAKE_BUILD_TYPE=Release \
   -Dpxr_DIR=/path/to/USD_WASM_Build \
   -DTBB_DIR=/path/to/USD_WASM_Build/lib/cmake/TBB \
   -DUSD_WEBVIEW_OPENUSD_SOURCE_DIR=/path/to/OpenUSD \
   -DCMAKE_INSTALL_PREFIX=$(pwd)/public/usd-webview-bindings
 
-cmake --build build/usd-webview-bindings --target install -- -j$(sysctl -n hw.logicalcpu)
+$CMAKE_BIN --build build/usd-webview-bindings --target install -- -j$(sysctl -n hw.logicalcpu)
 ```
 
 `USD_WEBVIEW_OPENUSD_SOURCE_DIR` points at the OpenUSD **source** checkout. It is needed for private headers (e.g. `pxr/usd/sdf/usdzResolver.h`) that the WASM install does not include.
 
-This installs three files into `public/usd-webview-bindings/`:
+This installs the generated module artifacts into `public/usd-webview-bindings/`:
 
 | File | Description |
 |---|---|
-| `usdWebViewBindings.js` | Browser-facing entrypoint, registers `window.UsdWebViewBindings` |
 | `usdWebViewBindingsModule.js` | Emscripten-generated JS glue |
 | `usdWebViewBindingsModule.wasm` | Compiled OpenUSD WASM binary (~10 MB) |
+
+The browser-facing wrapper is currently maintained separately at:
+
+```text
+public/usd-webview-bindings/usdWebViewBindings.js
+```
 
 ## 3. Run the frontend
 
@@ -62,15 +71,51 @@ Re-run the `cmake --build` and install step from section 2. The `emcmake cmake` 
 
 ```sh
 source /path/to/emsdk/emsdk_env.sh
-cmake --build build/usd-webview-bindings --target install -- -j$(sysctl -n hw.logicalcpu)
+export CMAKE_BIN=/opt/homebrew/bin/cmake
+$CMAKE_BIN --build build/usd-webview-bindings --target install -- -j$(sysctl -n hw.logicalcpu)
 ```
 
 ## Rebuilding after JS wrapper changes
 
-The JS wrapper (`native/usd-webview-bindings/usdWebViewBindings.js`) is copied into `public/` during the install step. After editing it, re-run just the install:
+The browser-facing wrapper currently lives directly in:
 
-```sh
-cmake --install build/usd-webview-bindings
+```text
+public/usd-webview-bindings/usdWebViewBindings.js
 ```
 
-The Vite dev server picks up changes in `public/` automatically.
+Editing that file does not require a native rebuild. The Vite dev server picks
+up changes in `public/` automatically.
+
+## Binding Version Bumps
+
+After a native bindings rebuild, bump the cache-bust ids so the browser loads
+the new wrapper and WASM instead of a cached build.
+
+Current places to update:
+
+- `public/usd-webview-bindings/usdWebViewBindings.js`
+  - `_wasmBuildId`
+  - `_wrapperBuildId`
+- `src/usd/UsdWebViewRuntime.ts`
+  - `RUNTIME_ENTRYPOINT`
+
+Recommended rebuild loop on this machine:
+
+```sh
+source /Users/michaelbecker/dev/USD/emsdk/emsdk_env.sh
+export CMAKE_BIN=/opt/homebrew/bin/cmake
+$CMAKE_BIN --build build/usd-webview-bindings --target install -- -j$(sysctl -n hw.logicalcpu)
+```
+
+Then bump the binding ids above before reloading the app.
+
+## MaterialX Note
+
+Current MaterialX behavior in this repo assumes:
+
+- the viewer keeps the MaterialX loader in bottom-left mode
+- MaterialX meshes flip UV `V` on the final geometry before sampling
+
+If MaterialX output suddenly regresses after a viewer refactor, verify the
+MaterialX `Flip V` path in `ThreeViewport.ts` before chasing native UV
+extraction again.

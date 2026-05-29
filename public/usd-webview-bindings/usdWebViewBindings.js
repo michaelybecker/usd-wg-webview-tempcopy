@@ -1,5 +1,5 @@
-const _wasmBuildId = "2026-05-21a"; // bump on every WASM rebuild to bust browser cache
-const _wrapperBuildId = "stage-renderer-stats-2026-05-21a";
+const _wasmBuildId = "point-instancer-2026-05-28a"; // bump on every WASM rebuild to bust browser cache
+const _wrapperBuildId = "point-instancer-2026-05-28a";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
