@@ -307,13 +307,6 @@ _EnsurePrimSpecInLayer(const SdfLayerHandle& layer, const SdfPath& primPath)
         return SdfPrimSpecHandle();
     }
 
-    static std::unordered_map<std::string, SdfPrimSpecHandle> s_primSpecCache;
-    const std::string cachePrefix = layer->GetIdentifier() + "|";
-    auto cachedIt = s_primSpecCache.find(cachePrefix + primPath.GetString());
-    if (cachedIt != s_primSpecCache.end() && cachedIt->second) {
-        return cachedIt->second;
-    }
-
     SdfChangeBlock changeBlock;
     SdfPrimSpecHandle primSpec = layer->GetPseudoRoot();
     for (const SdfPath& prefix : primPath.GetPrefixes()) {
@@ -342,12 +335,7 @@ _EnsurePrimSpecInLayer(const SdfLayerHandle& layer, const SdfPath& primPath)
                 std::string());
         }
         primSpec = childSpec;
-        if (primSpec) {
-            s_primSpecCache[cachePrefix + prefix.GetString()] = primSpec;
-        }
     }
-
-    s_primSpecCache[cachePrefix + primPath.GetString()] = primSpec;
     return primSpec;
 }
 
@@ -695,7 +683,10 @@ public:
     {
         static const TfTokenVector tokens = {
             HdPrimTypeTokens->camera,
-            HdPrimTypeTokens->material
+            HdPrimTypeTokens->material,
+            HdPrimTypeTokens->coordSys,
+            HdPrimTypeTokens->domeLight,
+            HdPrimTypeTokens->extComputation
         };
         return tokens;
     }
@@ -1105,12 +1096,6 @@ _BuildHydraMeshUpdateFromSceneDelegate(
             }
         }
     }
-    _AppendSceneIndexPointComputations(
-        delegate,
-        id,
-        update,
-        &pointsComputations);
-
     if (!pointsComputations.empty()) {
         update->pointComputationCount =
             static_cast<int>(pointsComputations.size());
@@ -3252,7 +3237,10 @@ _ExtractMaterial(
 }
 
 std::vector<MaterialSubsetGroup>
-_ExtractMaterialSubsetGroups(const UsdGeomMesh& mesh, const MeshPayload& payload)
+_ExtractMaterialSubsetGroupsFromFaceRuns(
+    const UsdGeomMesh& mesh,
+    const std::vector<int>& faceIndexStarts,
+    const std::vector<int>& faceIndexCounts)
 {
     std::vector<MaterialSubsetGroup> groups;
     for (const UsdPrim& child : mesh.GetPrim().GetChildren()) {
@@ -3285,11 +3273,11 @@ _ExtractMaterialSubsetGroups(const UsdGeomMesh& mesh, const MeshPayload& payload
         int runEnd = -1;
         for (const int faceIndex : sortedFaceIndices) {
             if (faceIndex < 0 ||
-                static_cast<size_t>(faceIndex) >= payload.faceIndexStarts.size()) {
+                static_cast<size_t>(faceIndex) >= faceIndexStarts.size()) {
                 continue;
             }
-            const int start = payload.faceIndexStarts[faceIndex];
-            const int count = payload.faceIndexCounts[faceIndex];
+            const int start = faceIndexStarts[faceIndex];
+            const int count = faceIndexCounts[faceIndex];
             if (count <= 0) {
                 continue;
             }
@@ -3321,6 +3309,47 @@ _ExtractMaterialSubsetGroups(const UsdGeomMesh& mesh, const MeshPayload& payload
             return a.start < b.start;
         });
     return groups;
+}
+
+std::vector<MaterialSubsetGroup>
+_ExtractMaterialSubsetGroups(const UsdGeomMesh& mesh, const MeshPayload& payload)
+{
+    return _ExtractMaterialSubsetGroupsFromFaceRuns(
+        mesh,
+        payload.faceIndexStarts,
+        payload.faceIndexCounts);
+}
+
+bool
+_BuildTriangulatedFaceIndexRuns(
+    const UsdGeomMesh& mesh,
+    std::vector<int>* faceIndexStarts,
+    std::vector<int>* faceIndexCounts)
+{
+    if (!faceIndexStarts || !faceIndexCounts) {
+        return false;
+    }
+
+    VtArray<int> faceVertexCounts;
+    if (!mesh.GetFaceVertexCountsAttr().Get(&faceVertexCounts) ||
+        faceVertexCounts.empty()) {
+        return false;
+    }
+
+    faceIndexStarts->clear();
+    faceIndexCounts->clear();
+    faceIndexStarts->reserve(faceVertexCounts.size());
+    faceIndexCounts->reserve(faceVertexCounts.size());
+
+    int faceStart = 0;
+    for (const int faceVertexCount : faceVertexCounts) {
+        const int faceCount = faceVertexCount >= 3 ? (faceVertexCount - 2) * 3 : 0;
+        faceIndexStarts->push_back(faceStart);
+        faceIndexCounts->push_back(faceCount);
+        faceStart += faceCount;
+    }
+
+    return true;
 }
 
 bool
@@ -5069,6 +5098,27 @@ _HydraCollectorUpdatesToRenderableArray(
             &collectionQueryCache,
             fallbackColor);
         renderable.set("material", material);
+        const bool isSkinnedHydraRenderable =
+            update.pointComputationCount > 0 ||
+            update.usedComputedPoints ||
+            update.sceneIndexHasSkelRoot ||
+            !update.sceneIndexSkeletonPath.empty() ||
+            update.usdSkelFallbackAvailable;
+        if (!isSkinnedHydraRenderable) {
+            MeshPayload subsetPayload;
+            if (_BuildTriangulatedFaceIndexRuns(
+                    UsdGeomMesh(prim),
+                    &subsetPayload.faceIndexStarts,
+                    &subsetPayload.faceIndexCounts)) {
+                _MaybeSetRenderableMaterialSubsets(
+                    &renderable,
+                    UsdGeomMesh(prim),
+                    subsetPayload,
+                    packageRootPath,
+                    &bindingsCache,
+                    &collectionQueryCache);
+            }
+        }
         renderable.set("pointComputationCount", update.pointComputationCount);
         renderable.set("sceneIndexChildCount", update.sceneIndexChildCount);
         renderable.set("sceneIndexHasSkelRoot", update.sceneIndexHasSkelRoot);

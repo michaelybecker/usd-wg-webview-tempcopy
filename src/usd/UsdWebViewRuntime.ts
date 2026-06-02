@@ -14,7 +14,8 @@ import type {
   StageSummary,
 } from "./types";
 
-const RUNTIME_ENTRYPOINT = "/usd-webview-bindings/usdWebViewBindings.js?v=point-instancer-2026-05-28a";
+const WASM_BUILD_NAME = "extcomp-sprim-2026-06-01g";
+const RUNTIME_ENTRYPOINT = `/usd-webview-bindings/usdWebViewBindings.js?v=${WASM_BUILD_NAME}`;
 const RUNTIME_ASSET_ROOT = "/usd-webview-bindings/";
 
 export class UsdWebViewRuntime {
@@ -59,8 +60,9 @@ export class UsdWebViewRuntime {
       this.status = {
         state: "ready",
         source: RUNTIME_ENTRYPOINT,
-        detail: "USD Web View bindings ready",
+        detail: `USD Web View bindings ready (${WASM_BUILD_NAME})`,
       };
+      console.info(`[USD WebView] runtime ready on WASM build ${WASM_BUILD_NAME}`);
       return this.status;
     } catch (error) {
       this.status = {
@@ -87,6 +89,11 @@ export class UsdWebViewRuntime {
       };
     }
 
+    this.referenceHydraDriver?.delete?.();
+    this.referenceHydraDriver = null;
+    this.hydraSyncDriver?.delete?.();
+    this.hydraSyncDriver = null;
+
     const materialXResources: RenderableTexture[] = [];
     for (const file of request.files) {
       const path = file.webkitRelativePath || file.name;
@@ -105,10 +112,6 @@ export class UsdWebViewRuntime {
     const rootPath = rootFile.webkitRelativePath || rootFile.name;
     const summary = await this.bindings.openStage(rootPath, request.loadAllPayloads ?? true);
     const normalizedSummary = normalizeStageSummary(rootPath, summary);
-    this.referenceHydraDriver?.delete?.();
-    this.referenceHydraDriver = null;
-    this.hydraSyncDriver?.delete?.();
-    this.hydraSyncDriver = null;
 
     if (normalizedSummary.error) {
       return { summary: normalizedSummary, renderables: [] };
@@ -143,11 +146,12 @@ export class UsdWebViewRuntime {
     }
 
     this.hydraSyncDriver = this.bindings.createHydraSyncDriver?.(rootPath) ?? null;
+    const hydraRenderables = this.extractHydraRenderablesAtTime(startTime);
 
     // Use Hydra for initial geometry — same path as animation frames, avoids
     // the legacy extractor which produces wrong topology for complex assets.
     // Fall back to legacy only if Hydra gives nothing (e.g. no Hydra support).
-    let renderables = this.extractHydraRenderablesAtTime(normalizedSummary.startTimeCode ?? 0);
+    let renderables = hydraRenderables;
     if (renderables.length === 0) {
       renderables = this.withMaterialXResources(this.bindings.extractRenderables?.(rootPath) ?? []);
     }
@@ -237,6 +241,20 @@ export class UsdWebViewRuntime {
   getPrimAttributes(primPath: string): PrimAttribute[] {
     if (!this.bindings?.getPrimAttributes || !this.currentStagePath) return [];
     return this.bindings.getPrimAttributes(this.currentStagePath, primPath);
+  }
+
+  getSkelDebugInfo(primPath: string, timeA = 0, timeB = 60): unknown {
+    if (!this.bindings?.getSkelDebugInfo || !this.currentStagePath) {
+      return null;
+    }
+    return this.bindings.getSkelDebugInfo(this.currentStagePath, primPath, timeA, timeB);
+  }
+
+  getLastSkelBindingOverlayContents(): string {
+    if (!this.bindings?.getLastSkelBindingOverlayContents || !this.currentStagePath) {
+      return "";
+    }
+    return this.bindings.getLastSkelBindingOverlayContents(this.currentStagePath);
   }
 
   extractRenderables(): RenderableMesh[] {

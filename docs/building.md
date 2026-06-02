@@ -75,6 +75,10 @@ export CMAKE_BIN=/opt/homebrew/bin/cmake
 $CMAKE_BIN --build build/usd-webview-bindings --target install -- -j$(sysctl -n hw.logicalcpu)
 ```
 
+Then bump the browser cache-bust ids before reloading the app. This is required
+after every native rebuild, or the browser can keep serving an older wrapper or
+WASM binary and make a native fix look like it failed.
+
 ## Rebuilding after JS wrapper changes
 
 The browser-facing wrapper currently lives directly in:
@@ -88,8 +92,8 @@ up changes in `public/` automatically.
 
 ## Binding Version Bumps
 
-After a native bindings rebuild, bump the cache-bust ids so the browser loads
-the new wrapper and WASM instead of a cached build.
+After every native bindings rebuild, bump the cache-bust ids so the browser
+loads the new wrapper and WASM instead of a cached build.
 
 Current places to update:
 
@@ -107,7 +111,7 @@ export CMAKE_BIN=/opt/homebrew/bin/cmake
 $CMAKE_BIN --build build/usd-webview-bindings --target install -- -j$(sysctl -n hw.logicalcpu)
 ```
 
-Then bump the binding ids above before reloading the app.
+Then immediately bump the binding ids above before reloading the app.
 
 ## MaterialX Note
 

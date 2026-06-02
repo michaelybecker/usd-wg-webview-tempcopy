@@ -1,5 +1,5 @@
-const _wasmBuildId = "point-instancer-2026-05-28a"; // bump on every WASM rebuild to bust browser cache
-const _wrapperBuildId = "point-instancer-2026-05-28a";
+const _wasmBuildId = "extcomp-sprim-2026-06-01g"; // bump on every WASM rebuild to bust browser cache
+const _wrapperBuildId = "extcomp-sprim-2026-06-01g";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
@@ -224,6 +224,9 @@ window.UsdWebViewBindings = {
       },
       inspectPrimRelationships(stagePath, primPath) {
         return module.InspectPrimRelationships(normalizePath(stagePath), primPath);
+      },
+      getLastSkelBindingOverlayContents(stagePath) {
+        return module.GetLastSkelBindingOverlayContents(normalizePath(stagePath));
       },
       getSkelDebugInfo(stagePath, primPath, timeA = 0, timeB = 60) {
         return module.GetSkelDebugInfo(normalizePath(stagePath), primPath, timeA, timeB);
