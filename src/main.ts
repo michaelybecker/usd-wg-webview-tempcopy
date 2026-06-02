@@ -311,7 +311,7 @@ if (
 const usdStageSummaryList = usdStageSummaryElement;
 const rendererSummaryList = rendererSummaryElement;
 
-const viewport = new ThreeViewport(viewportElement);
+let viewport = new ThreeViewport(viewportElement!);
 const runtime = new UsdWebViewRuntime();
 runtime.setHydraSyncDriverEnabled(
   localStorage.getItem("usdWebView.hydraSyncDriver") !== "0"
@@ -376,6 +376,7 @@ type RendererStats = {
 let currentRendererStats: RendererStats | null = null;
 let isLoadingStage = false;
 let variantChangeSerial = 0;
+let stageLoadSerial = 0;
 
 function setStatus(message: string, busy = false): void {
   statusLabel!.textContent = message;
@@ -442,6 +443,9 @@ function hidePlaybar(): void {
 }
 
 function sampleAnimationFrame(timeCode: number): void {
+  if (isLoadingStage) {
+    return;
+  }
   const renderables = runtime.extractHydraRenderablesAtTime(timeCode);
   if (renderables.length > 0) {
     viewport.updateRenderables(renderables);
@@ -624,11 +628,14 @@ async function applyVariantChange(
   setStatus(loadingMessage, true);
   await waitForUiPaint();
 
+  let refreshedRenderables: RenderableMesh[] = [];
+
   if (!isMaterialVariant) {
     const subtreeRenderables = primPath && !isAnimationVariant
       ? runtime.extractHydraRenderableSubtreeAtTime(primPath, animCurrent)
       : null;
     if (primPath && !isAnimationVariant && subtreeRenderables && subtreeRenderables.length > 0) {
+      refreshedRenderables = subtreeRenderables;
       viewport.updateRenderablesUnderRoot(
         primPath,
         subtreeRenderables,
@@ -639,6 +646,7 @@ async function applyVariantChange(
       if (!renderables || renderables.length === 0) {
         renderables = runtime.extractRenderables();
       }
+      refreshedRenderables = renderables;
       if (isAnimationVariant) {
         viewport.renderStage(renderables, currentStageSummary, false);
       } else {
@@ -648,11 +656,13 @@ async function applyVariantChange(
     viewport.renderGaussianSplats(runtime.extractGaussianSplats());
   }
 
-  const materializedRenderables = primPath
-    ? runtime.extractRenderablesWithMaterialsUnderRoot(primPath)
-    : runtime.extractRenderablesWithMaterials();
-  if (materializedRenderables.length > 0) {
-    await viewport.updateRenderablesAsync(materializedRenderables);
+  if (isMaterialVariant || refreshedRenderables.length === 0) {
+    refreshedRenderables = primPath
+      ? runtime.extractRenderablesWithMaterialsUnderRoot(primPath)
+      : runtime.extractRenderablesWithMaterials();
+  }
+  if (refreshedRenderables.length > 0) {
+    await viewport.updateRenderablesAsync(refreshedRenderables);
   }
 
   if (serial !== variantChangeSerial) {
@@ -662,8 +672,8 @@ async function applyVariantChange(
   const newPrims = runtime.getSceneGraph();
   renderSceneGraph(newPrims);
   currentRendererStats = collectRendererStats(
-    materializedRenderables.length > 0
-      ? materializedRenderables
+    refreshedRenderables.length > 0
+      ? refreshedRenderables
       : runtime.extractHydraRenderableSnapshotAtTime(animCurrent) ?? runtime.extractRenderables(),
     runtime.extractGaussianSplats()
   );
@@ -743,7 +753,7 @@ sceneGraphList!.addEventListener("click", (e) => {
 // --- Inspector rendering ---
 function renderRuntimeStatus(status: RuntimeStatus): void {
   if (!isLoadingStage) {
-    setStatus(status.state === "ready" ? "Ready" : status.detail, status.state === "loading");
+    setStatus(status.detail, status.state === "loading");
   }
 }
 
@@ -1038,6 +1048,32 @@ function applyLightingOptions(): void {
   hdriIntensityValue.textContent = hdriIntensity.toFixed(2);
 }
 
+function syncViewportState(target: ThreeViewport): void {
+  target.setSplatViewOptions({
+    maxShDegree: splatFidelityOptions[splatFidelityIndex].maxShDegree,
+    scaleMultiplier: splatDetailOptions[splatDetailIndex].scaleMultiplier,
+  });
+  target.setNavigationMode(navigationMode);
+  target.setGameCameraSpeed(gameCameraSpeed);
+  target.setViewUpAxis(getEffectiveUpAxis(currentStageSummary?.upAxis));
+  target.setOutputColorSpace(outputColorSpace as ColorSpace);
+  target.setMaterialXFlipV(materialXFlipV);
+  target.setToneMapping(toneMappingForChoice(toneMappingChoice));
+  target.setToneMappingExposure(toneMappingExposure);
+  if (lightingMode === "default" || !hdriMapLabel) {
+    target.useDefaultLighting();
+  }
+  target.setHdriMapVisible(hdriMapVisible);
+  target.setHdriIntensity(hdriIntensity);
+}
+
+function replaceViewport(): void {
+  viewport.dispose();
+  viewport = new ThreeViewport(viewportElement!);
+  syncViewportState(viewport);
+  viewport.start(onTick);
+}
+
 for (const button of app.querySelectorAll<HTMLButtonElement>("[data-navigation-mode]")) {
   button.addEventListener("click", () => {
     navigationMode = button.dataset.navigationMode as NavigationMode;
@@ -1219,6 +1255,7 @@ async function boot(): Promise<void> {
   renderRuntimeStatus(runtime.status);
   currentStageSummary = null;
   renderStageSummary(null);
+  syncViewportState(viewport);
   viewport.start(onTick);
 
   const status = await runtime.load();
@@ -1230,11 +1267,15 @@ async function loadFiles(files: File[]): Promise<void> {
   if (!files.length) {
     return;
   }
+  const loadSerial = ++stageLoadSerial;
 
   hidePlaybar();
   isLoadingStage = true;
   setStatus("loading USD stage...", true);
   await waitForUiPaint();
+  if (loadSerial !== stageLoadSerial) {
+    return;
+  }
   clearSceneGraph();
   currentRendererStats = null;
   viewportElement!.classList.remove("has-stage");
@@ -1244,6 +1285,7 @@ async function loadFiles(files: File[]): Promise<void> {
     rootFile: rootFile?.webkitRelativePath || rootFile?.name || "Unknown",
   };
   renderStageSummary(currentStageSummary);
+  replaceViewport();
 
   let result: StageLoadResult;
   try {
@@ -1255,9 +1297,14 @@ async function loadFiles(files: File[]): Promise<void> {
       loadAllPayloads: loadAllPayloadsOnStageOpen,
     });
   } catch (error) {
-    isLoadingStage = false;
-    setStatus(`Stage load failed: ${error instanceof Error ? error.message : String(error)}`, false);
+    if (loadSerial === stageLoadSerial) {
+      isLoadingStage = false;
+      setStatus(`Stage load failed: ${error instanceof Error ? error.message : String(error)}`, false);
+    }
     throw error;
+  }
+  if (loadSerial !== stageLoadSerial) {
+    return;
   }
 
   currentStageSummary = result.summary;
@@ -1265,7 +1312,21 @@ async function loadFiles(files: File[]): Promise<void> {
   renderRuntimeStatus(runtime.status);
   const gaussianSplats = result.gaussianSplats ?? [];
   let rendererStatsRenderables = result.renderables ?? [];
+  if (!result.usedReferenceHydraDriver && rendererStatsRenderables.length > 0) {
+    setStatus("loading materials...", true);
+    await waitForUiPaint();
+    if (loadSerial !== stageLoadSerial) {
+      return;
+    }
+    const materializedRenderables = runtime.extractRenderablesWithMaterials();
+    if (materializedRenderables.length > 0) {
+      rendererStatsRenderables = materializedRenderables;
+    }
+  }
   await viewport.prepareForRenderables(rendererStatsRenderables);
+  if (loadSerial !== stageLoadSerial) {
+    return;
+  }
   if (result.usedReferenceHydraDriver) {
     viewport.frameCurrentStage();
   } else {
@@ -1297,23 +1358,39 @@ async function loadFiles(files: File[]): Promise<void> {
     }
   }
   await waitForUiPaint();
-  if (result.usedReferenceHydraDriver || (result.renderables?.length ?? 0) > 0) {
-    setStatus("loading materials...", true);
-    await waitForUiPaint();
+  if (loadSerial !== stageLoadSerial) {
+    return;
+  }
+  if (result.usedReferenceHydraDriver || rendererStatsRenderables.length > 0) {
+    if (result.usedReferenceHydraDriver) {
+      setStatus("loading materials...", true);
+      await waitForUiPaint();
+      if (loadSerial !== stageLoadSerial) {
+        return;
+      }
+    }
     const materializedRenderables = result.usedReferenceHydraDriver
       ? runtime.extractRenderablesWithMaterials()
       : rendererStatsRenderables;
     if (materializedRenderables.length > 0) {
       setStatus("decoding textures...", true);
       await waitForUiPaint();
+      if (loadSerial !== stageLoadSerial) {
+        return;
+      }
       await viewport.updateRenderablesAsync(materializedRenderables);
+      if (loadSerial !== stageLoadSerial) {
+        return;
+      }
       rendererStatsRenderables = materializedRenderables;
       currentRendererStats = collectRendererStats(rendererStatsRenderables, gaussianSplats);
       renderStageSummary(currentStageSummary);
     }
   }
-  isLoadingStage = false;
-  setStatus(result.summary?.error ? "Stage load failed" : "Ready", false);
+  if (loadSerial === stageLoadSerial) {
+    isLoadingStage = false;
+    setStatus(result.summary?.error ? "Stage load failed" : "Ready", false);
+  }
 }
 
 filePicker.addEventListener("change", () => {

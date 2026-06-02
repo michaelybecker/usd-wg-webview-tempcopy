@@ -96,6 +96,7 @@ export class ThreeViewport {
   private readonly meshByPath = new Map<string, Mesh>();
   private readonly pathByMesh = new Map<Mesh, string>();
   private readonly highlightedMeshes = new Set<Mesh>();
+  private textureGeneration = 0;
   private selectedInstance: PickSelection | null = null;
   private selectedInstanceOverlays: Mesh[] = [];
   private readonly raycaster = new Raycaster();
@@ -188,6 +189,7 @@ export class ThreeViewport {
     this.revokeTextureUrls();
     this.defaultEnvironmentTarget.dispose();
     this.renderer.dispose();
+    this.renderer.domElement.remove();
   }
 
   renderStage(
@@ -303,19 +305,24 @@ export class ThreeViewport {
 
     return {
       createRPrim: (_type: string, id: string): ReferenceHydraRPrim => {
-        const geometry = new BufferGeometry();
-        const material = new MeshPhysicalMaterial({
-          color: new Color(0xb8c4cf),
-          metalness: 0.05,
-          roughness: 0.55,
-          side: DoubleSide,
-        });
-        const mesh = new Mesh(geometry, material);
-        mesh.name = id.split("/").filter(Boolean).pop() || id;
-        mesh.matrixAutoUpdate = false;
-        this.stageRoot.add(mesh);
-        this.meshByPath.set(id, mesh);
-        this.pathByMesh.set(mesh, id);
+        const existing = this.meshByPath.get(id);
+        const mesh = existing ?? new Mesh(
+          new BufferGeometry(),
+          new MeshPhysicalMaterial({
+            color: new Color(0xb8c4cf),
+            metalness: 0.05,
+            roughness: 0.55,
+            side: DoubleSide,
+          })
+        );
+        const geometry = mesh.geometry as BufferGeometry;
+        if (!existing) {
+          mesh.name = id.split("/").filter(Boolean).pop() || id;
+          mesh.matrixAutoUpdate = false;
+          this.stageRoot.add(mesh);
+          this.meshByPath.set(id, mesh);
+          this.pathByMesh.set(mesh, id);
+        }
 
         let points = new Float32Array();
         let indices = new Int32Array();
@@ -766,7 +773,6 @@ export class ThreeViewport {
       side: DoubleSide,
     });
     this.updateMaterialProperties(material, renderable, rmat);
-    this.applyMaterialTextures(material, rmat);
     return material;
   }
 
@@ -1022,6 +1028,7 @@ export class ThreeViewport {
   }
 
   private clearStage(): void {
+    this.textureGeneration += 1;
     this.splatRenderer?.clear();
     this.meshByPath.clear();
     this.pathByMesh.clear();
@@ -1078,12 +1085,22 @@ export class ThreeViewport {
       return Promise.resolve();
     }
 
-    if (userData[textureKey] === asset.path) {
+    const previous = materialRecord[slot as string];
+    const hasExpectedTexture =
+      previous instanceof Texture &&
+      previous.name === asset.path;
+
+    if (userData[textureKey] === asset.path && hasExpectedTexture) {
       return Promise.resolve();
     }
+
     userData[textureKey] = asset.path;
+    const generation = this.textureGeneration;
 
     return this.loadTextureAsset(asset).then((baseTexture) => {
+      if (generation !== this.textureGeneration) {
+        return;
+      }
       if (!baseTexture) {
         userData[textureKey] = undefined;
         return;
@@ -1100,10 +1117,10 @@ export class ThreeViewport {
       if (slot === "emissiveMap" && material.emissive.getHex() === 0x000000) {
         material.emissive.set(0xffffff);
       }
-      const previous = materialRecord[slot as string];
-      if (previous instanceof Texture && previous.userData.webviewManaged) {
-        previous.dispose();
-        this.managedTextures.delete(previous);
+      const nextPrevious = materialRecord[slot as string];
+      if (nextPrevious instanceof Texture && nextPrevious.userData.webviewManaged) {
+        nextPrevious.dispose();
+        this.managedTextures.delete(nextPrevious);
       }
       materialRecord[slot as string] = texture;
       material.needsUpdate = true;
@@ -1115,6 +1132,7 @@ export class ThreeViewport {
     if (cached) {
       return cached;
     }
+    const generation = this.textureGeneration;
 
     const bytes = new ArrayBuffer(asset.data.byteLength);
     new Uint8Array(bytes).set(asset.data);
@@ -1127,9 +1145,12 @@ export class ThreeViewport {
       loader.load(
         url,
         (texture: Texture) => {
+          if (generation !== this.textureGeneration) {
+            texture.dispose();
+            resolve(null);
+            return;
+          }
           texture.name = asset.path;
-          texture.userData.webviewManaged = true;
-          this.managedTextures.add(texture);
           resolve(texture);
         },
         undefined,

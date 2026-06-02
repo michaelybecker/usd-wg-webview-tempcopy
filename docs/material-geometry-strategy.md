@@ -141,6 +141,36 @@ When working on materials from this point forward:
 That is the state of the repo today, and that is the next sensible refactor
 direction.
 
+## Fresh Start Methodology
+
+The reload corruption debugging established one practical rule for stage loads:
+
+- treat a new stage load as a fresh render world, not as an in-place cleanup of
+  the previous one
+
+In practice that means:
+
+1. Dispose the old `ThreeViewport` and create a new one for the next stage
+   load.
+2. Reapply the current UI/view settings onto that new viewport.
+3. Keep stage-load async work fenced by a load serial so an older load cannot
+   finish into a newer viewport.
+4. Preserve the one-time authored material/texture application pass, but do not
+   let it become a second long-lived mesh authority.
+
+This is intentionally closer to the older `usd-viewer` methodology than the
+earlier “scrub and reuse the same viewport forever” approach in this repo.
+
+The reason is simple: the second-load corruption was not solved by finding one
+missed cache clear. It was solved by restoring a hard lifetime boundary between
+stage loads.
+
+So the working default for future load/reset bugs should be:
+
+- prefer a fresh-start viewport recreation first
+- only fall back to finer-grained cleanup if there is a strong reason not to
+  recreate the render world
+
 ## Open Issues
 
 ### Native Normal Fidelity
