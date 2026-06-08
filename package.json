@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@sparkjsdev/spark": "^2.0.0",
-    "three": "github:bhouston/three.js#a36f92eac5a09e3d5fb50952d5b2aa02225b659b"
+    "three": "https://codeload.github.com/bhouston/three.js/tar.gz/a36f92eac5a09e3d5fb50952d5b2aa02225b659b"
   },
   "devDependencies": {
     "@types/three": "^0.180.0",

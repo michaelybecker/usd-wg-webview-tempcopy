@@ -83,6 +83,7 @@ export class ThreeViewport {
   private readonly textureCache = new Map<string, Promise<Texture | null>>();
   private readonly materialXLoader = new MaterialXLoader();
   private readonly materialXResourceUrls = new Map<string, string>();
+  private readonly materialXTangentWarnings = new Set<string>();
   private readonly managedTextures = new Set<Texture>();
   private readonly ambientLight: AmbientLight;
   private readonly hemisphereLight: HemisphereLight;
@@ -700,6 +701,10 @@ export class ThreeViewport {
       return null;
     }
     if (!this.isWebGpuRenderer()) {
+      console.warn("[USD WebView] Skipping MaterialX material because WebGPU renderer is unavailable", {
+        path: materialX.path,
+        materialName: materialX.materialName,
+      });
       return null;
     }
 
@@ -717,13 +722,24 @@ export class ThreeViewport {
         ? result.materials[materialX.materialName]
         : Object.values(result.materials)[0];
       if (!material) {
+        console.warn("[USD WebView] MaterialX loader did not produce a usable material", {
+          path: materialX.path,
+          materialName: materialX.materialName,
+          availableMaterials: Object.keys(result.materials),
+          report: result.report,
+        });
         return null;
       }
       material.side = DoubleSide;
       material.userData.webviewMaterialX = true;
       this.experimentalMaterialXMode = true;
       return material;
-    } catch {
+    } catch (error) {
+      console.warn("[USD WebView] Failed to create MaterialX material", {
+        path: materialX.path,
+        materialName: materialX.materialName,
+        error,
+      });
       return null;
     }
   }
@@ -835,7 +851,7 @@ export class ThreeViewport {
   }
 
   // Update only vertex positions on an existing geometry for animation frames.
-  // Preserves UVs, normals re-computed from the original indexed topology.
+  // Preserves UVs, normals/tangents re-computed from the original indexed topology.
   // Falls back to full rebuild only when vertex count changes (topology shift).
   private updateGeometryPositions(geo: BufferGeometry, renderable: RenderableMesh): void {
     const pos = this.faceExpandAttr(renderable.points as number[], renderable.indices as number[], 3);
@@ -845,6 +861,7 @@ export class ThreeViewport {
       (posAttr.array as Float32Array).set(pos);
       posAttr.needsUpdate = true;
       this.setExpandedVertexNormals(geo, renderable.points, renderable.indices);
+      this.setExpandedVertexTangents(geo, renderable);
     } else {
       // Topology changed — full rebuild, but salvage UVs from the old geometry
       const savedUv = geo.attributes.uv;
@@ -896,6 +913,7 @@ export class ThreeViewport {
       this.applyGeometryGroups(geo, renderable);
     }
     this.setExpandedVertexNormals(geo, points, indices);
+    this.setExpandedVertexTangents(geo, renderable);
     geo.computeBoundingBox();
     geo.computeBoundingSphere();
     return geo;
@@ -947,21 +965,87 @@ export class ThreeViewport {
     points: ArrayLike<number>,
     indices: ArrayLike<number>
   ): void {
-    const positions = this.faceExpandAttr(points, indices, 3);
-    const normals = new Float32Array(positions.length);
-    const weldedNormals = new Map<string, Vector3>();
-    const weldedOffsets = new Map<string, number[]>();
+    const normals = this.buildIndexedVertexNormals(points, indices);
+    geo.setAttribute("normal", new Float32BufferAttribute(this.faceExpandAttr(normals, indices, 3), 3));
+    geo.attributes.normal.needsUpdate = true;
+  }
 
-    for (let i = 0; i + 8 < positions.length; i += 9) {
-      const ax = positions[i];
-      const ay = positions[i + 1];
-      const az = positions[i + 2];
-      const bx = positions[i + 3];
-      const by = positions[i + 4];
-      const bz = positions[i + 5];
-      const cx = positions[i + 6];
-      const cy = positions[i + 7];
-      const cz = positions[i + 8];
+  private setExpandedVertexTangents(
+    geo: BufferGeometry,
+    renderable: RenderableMesh
+  ): void {
+    const tangentAttribute = this.buildExpandedVertexTangents(renderable);
+    if (tangentAttribute) {
+      geo.setAttribute("tangent", tangentAttribute);
+      geo.attributes.tangent.needsUpdate = true;
+      return;
+    }
+
+    if (geo.getAttribute("tangent")) {
+      geo.deleteAttribute("tangent");
+    }
+  }
+
+  private buildExpandedVertexTangents(renderable: RenderableMesh): Float32BufferAttribute | null {
+    const { points, indices, uvs } = renderable;
+    if (!uvs?.length) {
+      this.warnIfMaterialXNeedsTangents(renderable, "MaterialX tangent generation skipped because the mesh has no UVs.");
+      return null;
+    }
+
+    const indexedGeometry = new BufferGeometry();
+    try {
+      indexedGeometry.setAttribute("position", new Float32BufferAttribute(new Float32Array(points), 3));
+
+      const uvAttribute = new Float32BufferAttribute(new Float32Array(uvs), 2);
+      this.applyMaterialXUvOptions(uvAttribute, renderable);
+      indexedGeometry.setAttribute("uv", uvAttribute);
+      indexedGeometry.setAttribute("normal", new Float32BufferAttribute(this.buildIndexedVertexNormals(points, indices), 3));
+      indexedGeometry.setIndex(Array.from(indices, (value) => Number(value)));
+      indexedGeometry.computeTangents();
+
+      const tangent = indexedGeometry.getAttribute("tangent");
+      if (!tangent) {
+        this.warnIfMaterialXNeedsTangents(renderable, "MaterialX tangent generation finished without producing a tangent attribute.");
+        return null;
+      }
+
+      return new Float32BufferAttribute(this.faceExpandAttr(tangent.array as ArrayLike<number>, indices, 4), 4);
+    } catch (error) {
+      console.warn("[USD WebView] Failed to compute tangents for mesh geometry", {
+        path: renderable.path,
+        materialPaths: this.getRenderableMaterialXPathList(renderable),
+        error,
+      });
+      this.warnIfMaterialXNeedsTangents(renderable, "MaterialX tangent generation failed for this mesh.");
+      return null;
+    } finally {
+      indexedGeometry.dispose();
+    }
+  }
+
+  private buildIndexedVertexNormals(
+    points: ArrayLike<number>,
+    indices: ArrayLike<number>
+  ): Float32Array {
+    const normals = new Float32Array(points.length);
+    const weldedNormals = new Map<string, Vector3>();
+    const weldedVertexIndices = new Map<string, number[]>();
+
+    for (let i = 0; i + 2 < indices.length; i += 3) {
+      const ia = Number(indices[i]);
+      const ib = Number(indices[i + 1]);
+      const ic = Number(indices[i + 2]);
+
+      const ax = points[ia * 3];
+      const ay = points[ia * 3 + 1];
+      const az = points[ia * 3 + 2];
+      const bx = points[ib * 3];
+      const by = points[ib * 3 + 1];
+      const bz = points[ib * 3 + 2];
+      const cx = points[ic * 3];
+      const cy = points[ic * 3 + 1];
+      const cz = points[ic * 3 + 2];
 
       const abx = bx - ax;
       const aby = by - ay;
@@ -974,21 +1058,17 @@ export class ThreeViewport {
       const ny = abz * acx - abx * acz;
       const nz = abx * acy - aby * acx;
 
-      for (let corner = 0; corner < 3; corner += 1) {
-        const offset = i + corner * 3;
-        const key = this.normalWeldKey(
-          positions[offset],
-          positions[offset + 1],
-          positions[offset + 2],
-        );
+      for (const vertexIndex of [ia, ib, ic]) {
+        const offset = vertexIndex * 3;
+        const key = this.normalWeldKey(points[offset], points[offset + 1], points[offset + 2]);
         const accumulated = weldedNormals.get(key) ?? new Vector3();
         accumulated.x += nx;
         accumulated.y += ny;
         accumulated.z += nz;
         weldedNormals.set(key, accumulated);
-        const offsets = weldedOffsets.get(key) ?? [];
-        offsets.push(offset);
-        weldedOffsets.set(key, offsets);
+        const indicesForKey = weldedVertexIndices.get(key) ?? [];
+        indicesForKey.push(vertexIndex);
+        weldedVertexIndices.set(key, indicesForKey);
       }
     }
 
@@ -999,15 +1079,74 @@ export class ThreeViewport {
       } else {
         accumulated.set(0, 0, 1);
       }
-      for (const offset of weldedOffsets.get(key) ?? []) {
+      for (const vertexIndex of weldedVertexIndices.get(key) ?? []) {
+        const offset = vertexIndex * 3;
         normals[offset] = accumulated.x;
         normals[offset + 1] = accumulated.y;
         normals[offset + 2] = accumulated.z;
       }
     }
 
-    geo.setAttribute("normal", new Float32BufferAttribute(normals, 3));
-    geo.attributes.normal.needsUpdate = true;
+    return normals;
+  }
+
+  private warnIfMaterialXNeedsTangents(renderable: RenderableMesh, detail: string): void {
+    for (const materialX of this.getRenderableMaterialXEntries(renderable)) {
+      if (!this.materialXMayNeedTangents(materialX)) {
+        continue;
+      }
+
+      const key = `${renderable.path}:${materialX.path}:${materialX.materialName ?? ""}`;
+      if (this.materialXTangentWarnings.has(key)) {
+        continue;
+      }
+      this.materialXTangentWarnings.add(key);
+      console.warn("[USD WebView] MaterialX material may render incorrectly without mesh tangents", {
+        meshPath: renderable.path,
+        materialXPath: materialX.path,
+        materialName: materialX.materialName,
+        detail,
+      });
+    }
+  }
+
+  private getRenderableMaterialXEntries(renderable: RenderableMesh): NonNullable<RenderableMaterial["materialX"]>[] {
+    const entries: NonNullable<RenderableMaterial["materialX"]>[] = [];
+    const seen = new Set<string>();
+    const pushEntry = (materialX?: RenderableMaterial["materialX"]) => {
+      if (!materialX) {
+        return;
+      }
+      const key = `${materialX.path}:${materialX.materialName ?? ""}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      entries.push(materialX);
+    };
+
+    pushEntry(renderable.material?.materialX);
+    for (const subset of renderable.materialSubsets ?? []) {
+      pushEntry(subset.material?.materialX);
+    }
+
+    return entries;
+  }
+
+  private getRenderableMaterialXPathList(renderable: RenderableMesh): string[] {
+    return this.getRenderableMaterialXEntries(renderable).map((materialX) => materialX.path);
+  }
+
+  private materialXMayNeedTangents(materialX: NonNullable<RenderableMaterial["materialX"]>): boolean {
+    if (!materialX.data?.length) {
+      return false;
+    }
+
+    const text = TEXT_DECODER.decode(materialX.data).toLowerCase();
+    return (
+      /(?:normalmap|gltf_normalmap|hextilednormalmap|<\s*bump\b|<\s*tangent\b|<\s*bitangent\b)/.test(text) ||
+      /name\s*=\s*["'](?:normal|coat_normal|geometry_coat_normal|specular_anisotropy|specular_rotation|anisotropy_strength|anisotropy_rotation)["']/.test(text)
+    );
   }
 
   private normalWeldKey(x: number, y: number, z: number): string {
@@ -1033,6 +1172,7 @@ export class ThreeViewport {
     this.meshByPath.clear();
     this.pathByMesh.clear();
     this.highlightedMeshes.clear();
+    this.materialXTangentWarnings.clear();
     this.selectedInstance = null;
     this.clearSelectedInstanceOverlays();
     this.revokeTextureUrls();
