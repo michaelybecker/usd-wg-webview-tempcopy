@@ -1,3 +1,7 @@
+Note:
+This document assumes a prebuilt OpenUSD WASM SDK exists.
+For details on recreating the OpenUSD + MaterialX WASM toolchain from scratch, see [wasm-sdk.md](wasm-sdk.md).
+
 # Building USD Web View
 
 ## Prerequisites
@@ -45,9 +49,9 @@ $CMAKE_BIN --build build/usd-webview-bindings --target install -- -j$(sysctl -n 
 
 This installs the generated module artifacts into `public/usd-webview-bindings/`:
 
-| File | Description |
-|---|---|
-| `usdWebViewBindingsModule.js` | Emscripten-generated JS glue |
+| File                            | Description                           |
+| ------------------------------- | ------------------------------------- |
+| `usdWebViewBindingsModule.js`   | Emscripten-generated JS glue          |
 | `usdWebViewBindingsModule.wasm` | Compiled OpenUSD WASM binary (~10 MB) |
 
 The browser-facing wrapper is currently maintained separately at:
