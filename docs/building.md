@@ -69,6 +69,10 @@ npm run dev
 
 Open the URL printed by Vite. The runtime panel should report **ready** once the WASM module loads.
 
+The repo includes a checked-in `.npmrc` so plain `npm install` works with the
+forked Three.js MaterialX tarball. No extra npm flags should be needed on a
+fresh clone.
+
 ## Rebuilding after C++ changes
 
 Re-run the `cmake --build` and install step from section 2. The `emcmake cmake` configure step only needs to be re-run when CMake variables change.
