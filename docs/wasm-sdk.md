@@ -380,6 +380,61 @@ to force browser cache invalidation.
 
 ---
 
+# Newer OpenUSD WASM Fixups
+
+When using newer OpenUSD / MaterialX checkouts, the stock OpenUSD WASM target
+still disables imaging and MaterialX at the `build_usd.py` option layer. If
+those features are forced back on with `--build-args USD,...`, expect these
+additional fixups.
+
+## MaterialX config may request X11
+
+MaterialX 1.39.x can install a `MaterialXConfig.cmake` that unconditionally
+requests X11 on Linux, even when consumed by an Emscripten build. Patch the
+installed WASM MaterialX config to skip X11 under Emscripten:
+
+```cmake
+if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
+    find_dependency(X11 REQUIRED COMPONENTS Xt)
+    ...
+endif()
+```
+
+## OpenSubdiv may need a manual WASM build
+
+If imaging is enabled only through USD CMake overrides, `build_usd.py` may not
+schedule OpenSubdiv as a dependency. Build OpenSubdiv v3.6.1 into the same USD
+WASM install prefix before building OpenUSD imaging:
+
+```bash
+emcmake cmake -S OpenSubdiv-3_6_1 -B USD_WASM_Build/build/OpenSubdiv-3_6_1 \
+  -G Ninja \
+  -DCMAKE_INSTALL_PREFIX=$PWD/USD_WASM_Build \
+  -DNO_EXAMPLES=ON -DNO_TUTORIALS=ON -DNO_REGRESSION=ON -DNO_DOC=ON \
+  -DNO_OMP=ON -DNO_CUDA=ON -DNO_OPENCL=ON -DNO_DX=ON \
+  -DNO_TESTS=ON -DNO_GLEW=ON -DNO_GLFW=ON -DNO_PTEX=ON -DNO_TBB=ON \
+  -DNO_METAL=ON -DNO_OPENGL=ON -DBUILD_SHARED_LIBS=OFF \
+  -DOSD_PATCH_SHADER_SOURCE_GLSL=ON
+
+cmake --build USD_WASM_Build/build/OpenSubdiv-3_6_1 --target install -j 8
+```
+
+## HGI unknown platform with GPU support off
+
+With `PXR_ENABLE_GL_SUPPORT=OFF` / GPU support off, current OpenUSD can still
+compile the base `hgi` library. Under Emscripten, `pxr/imaging/hgi/hgi.cpp` may
+hit:
+
+```text
+#error Unknown Platform
+```
+
+For a no-GPU web extraction build, remove that compile-time error and keep the
+existing `return nullptr;` in the unknown-platform branch. This lets HGI compile
+without manufacturing a fake GL/Metal/Vulkan backend.
+
+---
+
 # Repro Checklist
 
 To recreate the WASM environment on a new machine:
