@@ -14,7 +14,7 @@ import type {
   StageSummary,
 } from "./types";
 
-const WASM_BUILD_NAME = "extcomp-sprim-2026-06-01g";
+const WASM_BUILD_NAME = "extcomp-sprim-2026-06-23a";
 const RUNTIME_ENTRYPOINT = `/usd-webview-bindings/usdWebViewBindings.js?v=${WASM_BUILD_NAME}`;
 const RUNTIME_ASSET_ROOT = "/usd-webview-bindings/";
 
@@ -327,6 +327,7 @@ function isMaterialXResourcePath(path: string): boolean {
 
 function mimeTypeForPath(path: string): string {
   const lower = path.toLowerCase();
+  if (lower.endsWith(".hdr")) return "image/vnd.radiance";
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
   if (lower.endsWith(".png")) return "image/png";
   if (lower.endsWith(".webp")) return "image/webp";

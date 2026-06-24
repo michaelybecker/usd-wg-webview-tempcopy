@@ -29,7 +29,14 @@ export type StageSummary = {
   startTimeCode?: number;
   endTimeCode?: number;
   upAxis?: string;
+  environment?: StageEnvironment;
   error?: string;
+};
+
+export type StageEnvironment = {
+  sourcePath?: string;
+  intensity?: number;
+  texture: RenderableTexture;
 };
 
 export type RenderableMesh = {

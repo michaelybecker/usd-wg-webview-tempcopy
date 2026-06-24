@@ -73,6 +73,7 @@
 #include "pxr/usd/usdGeom/subset.h"
 #include "pxr/usd/usdGeom/tokens.h"
 #include "pxr/usd/usdGeom/xformCache.h"
+#include "pxr/usd/usdLux/domeLight.h"
 #include "pxr/usd/usdShade/connectableAPI.h"
 #include "pxr/usd/usdShade/input.h"
 #include "pxr/usd/usdShade/material.h"
@@ -2661,6 +2662,9 @@ _GetMimeType(const std::string& path)
     if (extension == "webp") {
         return "image/webp";
     }
+    if (extension == "hdr") {
+        return "image/vnd.radiance";
+    }
     if (extension == "exr") {
         return "image/x-exr";
     }
@@ -2718,6 +2722,60 @@ _ReadTextureAsset(const std::string& path, const std::string& packageRootPath)
     texture.set("mimeType", _GetMimeType(resolvedAssetPath));
     texture.set("data", _BytesArray(bytes));
     return texture;
+}
+
+emscripten::val
+_ExtractStageEnvironment(const UsdStageRefPtr& stage)
+{
+    if (!stage) {
+        return emscripten::val::undefined();
+    }
+
+    std::string packageRootPath = _GetLayerIdentifier(stage->GetRootLayer());
+    if (ArIsPackageRelativePath(packageRootPath)) {
+        const size_t bracketPos = packageRootPath.find('[');
+        if (bracketPos != std::string::npos) {
+            packageRootPath = packageRootPath.substr(0, bracketPos);
+        }
+    }
+
+    for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot())) {
+        UsdLuxDomeLight domeLight(prim);
+        if (!domeLight) {
+            continue;
+        }
+
+        SdfAssetPath textureFile;
+        if (!domeLight.GetTextureFileAttr().Get(&textureFile)) {
+            continue;
+        }
+
+        const std::string rawPath = !textureFile.GetResolvedPath().empty()
+            ? textureFile.GetResolvedPath()
+            : textureFile.GetAssetPath();
+        if (rawPath.empty()) {
+            continue;
+        }
+
+        emscripten::val texture = _ReadTextureAsset(rawPath, packageRootPath);
+        if (texture["data"].isUndefined()) {
+            continue;
+        }
+
+        float intensity = 1.0f;
+        domeLight.GetIntensityAttr().Get(&intensity);
+
+        float exposure = 0.0f;
+        domeLight.GetExposureAttr().Get(&exposure);
+
+        emscripten::val environment = emscripten::val::object();
+        environment.set("sourcePath", prim.GetPath().GetString());
+        environment.set("intensity", intensity * std::pow(2.0f, exposure));
+        environment.set("texture", texture);
+        return environment;
+    }
+
+    return emscripten::val::undefined();
 }
 
 bool
@@ -4406,6 +4464,10 @@ OpenStage(const std::string& path, bool loadAllPayloads = true)
     result.set("startTimeCode", stage->GetStartTimeCode());
     result.set("endTimeCode", stage->GetEndTimeCode());
     result.set("upAxis", UsdGeomGetStageUpAxis(stage).GetString());
+    emscripten::val environment = _ExtractStageEnvironment(stage);
+    if (!environment.isUndefined()) {
+        result.set("environment", environment);
+    }
     return result;
 }
 

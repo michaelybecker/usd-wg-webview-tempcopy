@@ -897,6 +897,12 @@ function formatCount(value: number | undefined): string {
   return value === undefined ? "-" : value.toLocaleString();
 }
 
+function assetLabel(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] || path;
+}
+
 function renderDefinitionList(values: Record<string, string>): string {
   return Object.entries(values)
     .map(([key, value]) => `<dt>${key}</dt><dd>${value}</dd>`)
@@ -1326,6 +1332,25 @@ async function loadFiles(files: File[]): Promise<void> {
   await viewport.prepareForRenderables(rendererStatsRenderables);
   if (loadSerial !== stageLoadSerial) {
     return;
+  }
+  const environment = result.summary?.environment;
+  if (environment) {
+    hdriIntensity = environment.intensity ?? 1;
+    hdriMapLabel = assetLabel(environment.texture.path);
+    lightingMode = "hdri";
+    try {
+      await viewport.loadHdriAsset(environment.texture, hdriMapLabel);
+    } catch (error) {
+      lightingMode = "default";
+      hdriMapLabel = null;
+      viewport.useDefaultLighting();
+      console.warn("Failed to load stage dome-light environment", {
+        sourcePath: environment.sourcePath,
+        texturePath: environment.texture.path,
+        error,
+      });
+    }
+    applyLightingOptions();
   }
   if (result.usedReferenceHydraDriver) {
     viewport.frameCurrentStage();

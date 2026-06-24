@@ -412,18 +412,22 @@ export class ThreeViewport {
   async loadHdriMap(file: File): Promise<void> {
     const url = URL.createObjectURL(file);
     try {
-      const texture = await this.loadHdriTexture(file, url);
-      texture.name = file.name;
-      texture.mapping = EquirectangularReflectionMapping;
-      texture.colorSpace = LinearSRGBColorSpace;
-      texture.needsUpdate = true;
+      const texture = await this.loadHdriTexture(file.name, url);
+      this.applyHdriTexture(texture, file.name);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
 
-      this.disposeHdriTexture();
-      this.hdriTexture = texture;
-      this.scene.environment = texture;
-      this.scene.background = this.hdriMapVisible ? texture : this.defaultBackground;
-      this.applyHdriIntensity();
-      this.setDefaultLightRigEnabled(false);
+  async loadHdriAsset(asset: RenderableTexture, label?: string): Promise<void> {
+    const bytes = new Uint8Array(asset.data.byteLength);
+    bytes.set(asset.data);
+    const url = URL.createObjectURL(
+      new Blob([bytes.buffer], { type: asset.mimeType || "application/octet-stream" })
+    );
+    try {
+      const texture = await this.loadHdriTexture(asset.path, url);
+      this.applyHdriTexture(texture, label ?? asset.path);
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -1350,11 +1354,25 @@ export class ThreeViewport {
     return asset.path.toLowerCase().endsWith(".exr") || asset.mimeType === "image/x-exr";
   }
 
-  private loadHdriTexture(file: File, url: string): Promise<Texture> {
-    if (file.name.toLowerCase().endsWith(".exr")) {
+  private loadHdriTexture(name: string, url: string): Promise<Texture> {
+    if (name.toLowerCase().endsWith(".exr")) {
       return this.exrLoader.loadAsync(url);
     }
     return this.hdrLoader.loadAsync(url);
+  }
+
+  private applyHdriTexture(texture: Texture, name: string): void {
+    texture.name = name;
+    texture.mapping = EquirectangularReflectionMapping;
+    texture.colorSpace = LinearSRGBColorSpace;
+    texture.needsUpdate = true;
+
+    this.disposeHdriTexture();
+    this.hdriTexture = texture;
+    this.scene.environment = texture;
+    this.scene.background = this.hdriMapVisible ? texture : this.defaultBackground;
+    this.applyHdriIntensity();
+    this.setDefaultLightRigEnabled(false);
   }
 
   private setDefaultLightRigEnabled(enabled: boolean): void {
