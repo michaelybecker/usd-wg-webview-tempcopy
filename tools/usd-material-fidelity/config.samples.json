@@ -1,0 +1,19 @@
+{
+  "materialFidelityRoot": "../material-fidelity",
+  "baselineRenderer": "threejs-new",
+  "carrierScene": {
+    "asset": "",
+    "rootPrimPath": "/World",
+    "bindingTargets": []
+  },
+  "selection": {
+    "mode": "subset",
+    "cases": [
+      "standard_surface/brass_tiled",
+      "textures/uv_checker",
+      "normalmap/brick_normal",
+      "procedural/noise_marble",
+      "transforms/uv_transform"
+    ]
+  }
+}

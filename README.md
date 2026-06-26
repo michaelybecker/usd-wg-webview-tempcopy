@@ -49,3 +49,4 @@ Open the local URL printed by Vite. The WASM bindings must be built first — se
 
 - [Building](docs/building.md) — Prerequisites and build instructions for the WASM bindings and frontend
 - [Material and Geometry Strategy](docs/material-geometry-strategy.md) — Native/Hydra vs authored-material responsibilities, plus the fresh-start stage-load methodology
+- [USD Material Fidelity](docs/usd-material-fidelity.md) — Local harness for USD-wrapping `material-fidelity` cases and validating the viewer translation boundary

@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 8000 --strictPort",
     "build": "tsc && vite build",
-    "preview": "vite preview --host 127.0.0.1 --port 8000 --strictPort"
+    "preview": "vite preview --host 127.0.0.1 --port 8000 --strictPort",
+    "usd-material-fidelity": "node tools/usd-material-fidelity/run.mjs",
+    "usd-material-fidelity:all": "node tools/usd-material-fidelity/run.mjs --all"
   },
   "dependencies": {
     "@sparkjsdev/spark": "^2.0.0",
