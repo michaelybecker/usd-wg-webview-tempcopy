@@ -24,10 +24,19 @@ export async function readConfig(configPath = getToolPaths().configPath) {
   return {
     ...config,
     materialFidelityRoot: path.resolve(rootDir, config.materialFidelityRoot),
+    capture: {
+      viewportWidth: config.capture?.viewportWidth ?? 1024,
+      viewportHeight: config.capture?.viewportHeight ?? 1024,
+      timeoutMs: config.capture?.timeoutMs ?? 60000,
+      settleFrames: config.capture?.settleFrames ?? 6,
+    },
     carrierScene: {
       ...config.carrierScene,
       asset: config.carrierScene?.asset
         ? path.resolve(rootDir, config.carrierScene.asset)
+        : "",
+      packageRoot: config.carrierScene?.packageRoot
+        ? path.resolve(rootDir, config.carrierScene.packageRoot)
         : "",
     },
   };
@@ -113,6 +122,29 @@ export async function copyDirRecursive(sourceDir, targetDir) {
   }
 }
 
+export async function listFilesRecursive(rootDir) {
+  const results = [];
+
+  async function walk(currentDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+      if (entry.isFile()) {
+        results.push(fullPath);
+      }
+    }
+  }
+
+  await walk(rootDir);
+  return results;
+}
+
 export async function writeJson(targetPath, value) {
   await ensureDir(path.dirname(targetPath));
   await fs.writeFile(targetPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -120,4 +152,8 @@ export async function writeJson(targetPath, value) {
 
 export function materialNameForCase(caseInfo) {
   return path.basename(caseInfo.id);
+}
+
+export function toPosixPath(filePath) {
+  return filePath.split(path.sep).join("/");
 }

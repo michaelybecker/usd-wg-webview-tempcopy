@@ -34,6 +34,39 @@ if (!app) {
   throw new Error("USD Web View root element was not found.");
 }
 
+type AutomationManifest = {
+  caseId?: string;
+  rootFile?: string;
+  files: Array<{
+    path: string;
+    url?: string;
+    absolutePath?: string;
+    mimeType?: string;
+  }>;
+};
+
+type AutomationState =
+  | { state: "idle" | "booting" | "loading" | "ready"; detail: string; caseId: string | null }
+  | { state: "error"; detail: string; caseId: string | null };
+
+type AutomationApi = {
+  getState(): AutomationState;
+  waitForReady(timeoutMs?: number): Promise<AutomationState>;
+  loadManifest(manifestUrl: string, timeoutMs?: number): Promise<AutomationState>;
+};
+
+declare global {
+  interface Window {
+    __USD_WEBVIEW_AUTOMATION__?: AutomationApi;
+  }
+}
+
+const searchParams = new URLSearchParams(window.location.search);
+const automationManifestUrl = searchParams.get("automationManifest");
+const automationEnabled = searchParams.get("automation") === "1" || !!automationManifestUrl;
+const automationSettleFrames = Math.max(1, Number(searchParams.get("settleFrames") ?? "6") || 6);
+document.documentElement.classList.toggle("automation-mode", automationEnabled);
+
 app.innerHTML = `
   <main class="shell" id="shell">
     <nav class="menubar" id="menubar" aria-label="Application menu">
@@ -377,6 +410,12 @@ let currentRendererStats: RendererStats | null = null;
 let isLoadingStage = false;
 let variantChangeSerial = 0;
 let stageLoadSerial = 0;
+let automationState: AutomationState = {
+  state: automationEnabled ? "booting" : "idle",
+  detail: automationEnabled ? "booting viewer" : "idle",
+  caseId: null,
+};
+const automationListeners = new Set<(state: AutomationState) => void>();
 
 function setStatus(message: string, busy = false): void {
   statusLabel!.textContent = message;
@@ -384,10 +423,61 @@ function setStatus(message: string, busy = false): void {
   materialXModeLabel!.hidden = !viewport.isExperimentalMaterialXMode();
 }
 
+function setAutomationState(
+  state: AutomationState["state"],
+  detail: string,
+  caseId = automationState.caseId
+): void {
+  automationState = {
+    state,
+    detail,
+    caseId: caseId ?? null,
+  };
+  for (const listener of automationListeners) {
+    listener(automationState);
+  }
+}
+
+function waitForAutomationReady(timeoutMs = 30000): Promise<AutomationState> {
+  if (automationState.state === "ready") {
+    return Promise.resolve(automationState);
+  }
+  if (automationState.state === "error") {
+    return Promise.reject(new Error(automationState.detail));
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      automationListeners.delete(onStateChange);
+      reject(new Error(`Timed out waiting for automation readiness: ${automationState.detail}`));
+    }, timeoutMs);
+
+    const onStateChange = (nextState: AutomationState): void => {
+      if (nextState.state === "ready") {
+        window.clearTimeout(timeout);
+        automationListeners.delete(onStateChange);
+        resolve(nextState);
+      } else if (nextState.state === "error") {
+        window.clearTimeout(timeout);
+        automationListeners.delete(onStateChange);
+        reject(new Error(nextState.detail));
+      }
+    };
+
+    automationListeners.add(onStateChange);
+  });
+}
+
 function waitForUiPaint(): Promise<void> {
   return new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });
+}
+
+async function waitForSettledFrames(frameCount = automationSettleFrames): Promise<void> {
+  for (let index = 0; index < frameCount; index += 1) {
+    await waitForUiPaint();
+  }
 }
 
 // --- Animation state ---
@@ -1264,9 +1354,23 @@ async function boot(): Promise<void> {
   syncViewportState(viewport);
   viewport.start(onTick);
 
-  const status = await runtime.load();
-  renderRuntimeStatus(status);
-
+  try {
+    const status = await runtime.load();
+    renderRuntimeStatus(status);
+    if (automationManifestUrl) {
+      await loadAutomationManifestStage(automationManifestUrl);
+    } else if (automationEnabled) {
+      setAutomationState("ready", "viewer ready");
+    }
+  } catch (error) {
+    if (automationEnabled) {
+      setAutomationState(
+        "error",
+        `Viewer boot failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    throw error;
+  }
 }
 
 async function loadFiles(files: File[]): Promise<void> {
@@ -1278,6 +1382,9 @@ async function loadFiles(files: File[]): Promise<void> {
   hidePlaybar();
   isLoadingStage = true;
   setStatus("loading USD stage...", true);
+  if (automationEnabled) {
+    setAutomationState("loading", "loading USD stage...");
+  }
   await waitForUiPaint();
   if (loadSerial !== stageLoadSerial) {
     return;
@@ -1306,6 +1413,12 @@ async function loadFiles(files: File[]): Promise<void> {
     if (loadSerial === stageLoadSerial) {
       isLoadingStage = false;
       setStatus(`Stage load failed: ${error instanceof Error ? error.message : String(error)}`, false);
+      if (automationEnabled) {
+        setAutomationState(
+          "error",
+          `Stage load failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     }
     throw error;
   }
@@ -1414,8 +1527,61 @@ async function loadFiles(files: File[]): Promise<void> {
   }
   if (loadSerial === stageLoadSerial) {
     isLoadingStage = false;
-    setStatus(result.summary?.error ? "Stage load failed" : "Ready", false);
+    const stageFailed = !!result.summary?.error;
+    setStatus(stageFailed ? "Stage load failed" : "Ready", false);
+    if (automationEnabled) {
+      setAutomationState(
+        stageFailed ? "error" : "ready",
+        stageFailed ? result.summary?.error ?? "Stage load failed" : "Ready",
+        rootFile?.webkitRelativePath || rootFile?.name || null
+      );
+    }
   }
+}
+
+async function loadAutomationManifestStage(manifestUrl: string): Promise<void> {
+  if (automationEnabled) {
+    setAutomationState("loading", `fetching automation manifest ${manifestUrl}`);
+  }
+
+  const response = await fetch(manifestUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch automation manifest: ${manifestUrl}`);
+  }
+
+  const manifest = await response.json() as AutomationManifest;
+  const files = await Promise.all(
+    manifest.files.map(async (entry) => {
+      const fileUrl = entry.url ?? (entry.absolutePath ? `/@fs/${entry.absolutePath.replace(/\\/g, "/")}` : null);
+      if (!fileUrl) {
+        throw new Error(`Automation manifest entry is missing a fetchable URL: ${entry.path}`);
+      }
+      const fileResponse = await fetch(fileUrl);
+      if (!fileResponse.ok) {
+        throw new Error(`Failed to fetch automation file: ${fileUrl}`);
+      }
+      const bytes = await fileResponse.arrayBuffer();
+      const file = new File([bytes], entry.path.split("/").pop() || entry.path, {
+        type: entry.mimeType || fileResponse.headers.get("content-type") || "application/octet-stream",
+      });
+      defineRelativePath(file, entry.path);
+      return file;
+    })
+  );
+
+  setAutomationState("loading", `loading ${manifest.caseId ?? manifest.rootFile ?? "automation stage"}`, manifest.caseId ?? null);
+  await loadFiles(files);
+  await waitForSettledFrames();
+  if (automationState.state !== "error") {
+    setAutomationState("ready", "automation stage ready", manifest.caseId ?? manifest.rootFile ?? null);
+  }
+}
+
+function defineRelativePath(file: File, relativePath: string): void {
+  Object.defineProperty(file, "webkitRelativePath", {
+    configurable: true,
+    value: relativePath,
+  });
 }
 
 filePicker.addEventListener("change", () => {
@@ -1548,5 +1714,18 @@ document.addEventListener("mouseup", () => {
   sgDrag = null;
   attrDrag = null;
 });
+
+window.__USD_WEBVIEW_AUTOMATION__ = {
+  getState(): AutomationState {
+    return automationState;
+  },
+  waitForReady(timeoutMs?: number): Promise<AutomationState> {
+    return waitForAutomationReady(timeoutMs);
+  },
+  async loadManifest(manifestUrl: string, timeoutMs = 30000): Promise<AutomationState> {
+    await loadAutomationManifestStage(manifestUrl);
+    return waitForAutomationReady(timeoutMs);
+  },
+};
 
 void boot();

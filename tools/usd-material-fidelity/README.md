@@ -22,6 +22,13 @@ What this repo does not have yet is the equivalent automated capture path for:
 - viewer-side MaterialX resource binding
 - deterministic viewport capture after the app settles
 
+This harness now provides that capture path with:
+
+- self-contained generated USD stage packages per case
+- an app automation mode that loads a case manifest through the normal file pipeline
+- Playwright-driven viewport capture
+- `pixelmatch` image diffs against `threejs-new`
+
 ## Why A Small Subset First
 
 This harness is designed to scale to the full `material-fidelity` corpus, but
@@ -52,6 +59,7 @@ Not committed:
 
 - imported corpus copies
 - generated USD wrappers
+- generated stage packages
 - rendered PNGs
 - diff images
 - ad hoc reports
@@ -65,9 +73,14 @@ Edit [config.samples.json](./config.samples.json):
 - `materialFidelityRoot`: local checkout of `material-fidelity`
 - `baselineRenderer`: renderer name used by `material-fidelity` for PNG baselines
 - `carrierScene.asset`: local USD asset used as the geometry carrier
+- `carrierScene.packageRoot`: directory that should be copied with the carrier
+  asset so its relative references still resolve inside generated packages
 - `carrierScene.rootPrimPath`: root prim inside that carrier asset
 - `carrierScene.bindingTargets`: prim paths under the root that should receive
   `material:binding`
+- `capture.viewportWidth` / `capture.viewportHeight`: deterministic screenshot size
+- `capture.timeoutMs`: browser automation timeout
+- `capture.settleFrames`: extra UI frames to wait after a stage reports ready
 
 The first pass assumes a shared carrier scene such as your USDified shaderball.
 
@@ -98,15 +111,14 @@ Enumerates every `.mtlx` case under `material-fidelityRoot`.
 Today the harness will:
 
 1. discover and import selected `material-fidelity` cases
-2. generate USD wrapper stages for each case
+2. generate self-contained USD stage packages for each case
 3. index expected `threejs-new` baseline PNG locations
-4. write a webview render plan
-5. write a diff plan
+4. load each case in automation mode through the real viewer
+5. capture viewport PNGs with Playwright
+6. diff them against the `threejs-new` baselines with `pixelmatch`
 
-The missing automation step is not "headless Three.js" in general.
-`material-fidelity` already does that for direct `.mtlx` inputs.
-
-The missing step here is automated capture through this repo's full USD viewer
-pipeline: load the generated USD case, wait for the WASM/USD/Hydra/material
-work to settle, frame it to the fidelity camera contract, then export a stable
-PNG for diffing.
+The current shape still does one stage load per case. That is acceptable for
+getting the pipeline working, but it is probably not the final throughput
+architecture. If full-corpus runs become normal, the next performance move is
+likely batching many MaterialX bindings into a shared carrier stage so the
+viewer can step through cases without paying repeated stage-load cost.

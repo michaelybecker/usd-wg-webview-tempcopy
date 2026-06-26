@@ -27,6 +27,10 @@ repo is specifically the capture path through the full app pipeline:
 - frame the same deterministic view contract
 - capture a PNG for comparison
 
+That capture path is now scaffolded in this repo with generated case manifests,
+an automation mode in the app, Playwright-driven viewport screenshots, and
+`pixelmatch` diffs.
+
 ## Design Goals
 
 - Keep artifact bloat out of git.
@@ -45,8 +49,8 @@ The harness lives under [tools/usd-material-fidelity](/home/mbecker/dev/USD/usd-
 - `import-material-fidelity.mjs` discovers and copies selected MaterialX cases
 - `usdify-case.mjs` emits per-case USD wrappers
 - `render-baseline.mjs` indexes expected `threejs-new` baseline PNGs
-- `render-webview.mjs` writes a capture plan for future viewport automation
-- `diff.mjs` writes a comparison plan for future image diffs
+- `render-webview.mjs` launches the viewer in automation mode and captures PNGs
+- `diff.mjs` compares captured PNGs against `threejs-new` baselines
 - `run.mjs` orchestrates the workflow
 
 Generated imports, wrappers, renders, and reports are gitignored.
@@ -56,6 +60,10 @@ selected MaterialX case. That is the easiest form to debug while the harness is
 young. If the full corpus becomes the normal path, a better shape is likely a
 shared carrier stage that hosts many bound materials so the viewer can step
 through cases without reloading a stage every time.
+
+Each generated case is packaged as a self-contained local stage bundle so the
+automation path can reconstruct the same file-drop package that the viewer
+expects, rather than relying on cross-directory filesystem references.
 
 ## Why The Initial Subset Matters
 

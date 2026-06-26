@@ -8,7 +8,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 8000 --strictPort",
     "usd-material-fidelity": "node tools/usd-material-fidelity/run.mjs",
-    "usd-material-fidelity:all": "node tools/usd-material-fidelity/run.mjs --all"
+    "usd-material-fidelity:all": "node tools/usd-material-fidelity/run.mjs --all",
+    "usd-material-fidelity:render": "node tools/usd-material-fidelity/render-webview.mjs",
+    "usd-material-fidelity:diff": "node tools/usd-material-fidelity/diff.mjs"
   },
   "dependencies": {
     "@sparkjsdev/spark": "^2.0.0",
@@ -16,6 +18,9 @@
   },
   "devDependencies": {
     "@types/three": "^0.180.0",
+    "pixelmatch": "^7.1.0",
+    "playwright": "^1.54.1",
+    "pngjs": "^7.0.0",
     "typescript": "^5.4.5",
     "vite": "^5.2.13"
   }

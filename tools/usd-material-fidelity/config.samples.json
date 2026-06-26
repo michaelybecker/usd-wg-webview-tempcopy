@@ -1,8 +1,15 @@
 {
   "materialFidelityRoot": "../material-fidelity",
   "baselineRenderer": "threejs-new",
+  "capture": {
+    "viewportWidth": 1024,
+    "viewportHeight": 1024,
+    "timeoutMs": 60000,
+    "settleFrames": 6
+  },
   "carrierScene": {
     "asset": "",
+    "packageRoot": "",
     "rootPrimPath": "/World",
     "bindingTargets": []
   },
