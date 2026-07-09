@@ -14,7 +14,8 @@ import type {
   StageSummary,
 } from "./types";
 
-const WASM_BUILD_NAME = "extcomp-sprim-2026-06-23a";
+import { WASM_BUILD_NAME } from "./generated/buildId";
+
 const RUNTIME_ENTRYPOINT = `/usd-webview-bindings/usdWebViewBindings.js?v=${WASM_BUILD_NAME}`;
 const RUNTIME_ASSET_ROOT = "/usd-webview-bindings/";
 

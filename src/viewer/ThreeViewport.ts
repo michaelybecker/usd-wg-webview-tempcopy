@@ -39,6 +39,20 @@ import { HDRLoader } from "three/examples/jsm/loaders/HDRLoader.js";
 import { MaterialXLoader } from "three/examples/jsm/loaders/MaterialXLoader.js";
 import type { PrimTransform, RenderableMaterial, RenderableMesh, RenderableGaussianSplat, RenderableTexture, StageSummary } from "../usd/types";
 import { GaussianSplatRenderer, type SplatViewOptions } from "./GaussianSplatRenderer";
+import {
+  applyMaterialXUvOptions,
+  buildIndexedVertexNormals,
+  faceExpandAttr,
+  geometryFingerprint,
+  getRenderableMaterialKey,
+  getSubsetMaterialKey,
+  getUniqueSubsetMaterials,
+  renderableHasMaterialX,
+} from "./GeometryBuilder";
+import {
+  createReferenceHydraRenderInterface,
+  type ReferenceHydraRenderInterface,
+} from "./referenceHydraInterface";
 
 interface FrameAnim {
   startPos: Vector3;
@@ -56,15 +70,10 @@ interface PickSelection {
 export type NavigationMode = "orbital" | "game";
 export type ViewUpAxis = "y" | "z";
 
-export type ReferenceHydraRPrim = {
-  updatePoints: (points: Float32Array) => void;
-  updateIndices: (indices: Int32Array) => void;
-  setTransform: (matrix: Float32Array) => void;
-};
-
-export type ReferenceHydraRenderInterface = {
-  createRPrim: (type: string, id: string) => ReferenceHydraRPrim;
-};
+export type {
+  ReferenceHydraRPrim,
+  ReferenceHydraRenderInterface,
+} from "./referenceHydraInterface";
 
 const TEXT_DECODER = new TextDecoder();
 const IDENTITY_MATRIX = new Matrix4();
@@ -209,9 +218,9 @@ export class ThreeViewport {
     for (const renderable of renderables) {
       const mesh = this.createSceneMesh(renderable);
       mesh.name = renderable.name || renderable.path;
-      mesh.userData.materialKey = this.getRenderableMaterialKey(renderable);
+      mesh.userData.materialKey = getRenderableMaterialKey(renderable, this.materialXFlipV);
       mesh.userData.ptsLen  = renderable.points.length;
-      mesh.userData.ptsFingerprint = this.geometryFingerprint(renderable.points);
+      mesh.userData.ptsFingerprint = geometryFingerprint(renderable.points);
       mesh.userData.instanceCount = renderable.instanceMatrices?.length ?? 0;
       this.meshByPath.set(renderable.path, mesh);
       this.pathByMesh.set(mesh, renderable.path);
@@ -243,7 +252,7 @@ export class ThreeViewport {
   }
 
   async prepareForRenderables(renderables: RenderableMesh[]): Promise<void> {
-    if (renderables.some((renderable) => this.renderableHasMaterialX(renderable))) {
+    if (renderables.some((renderable) => renderableHasMaterialX(renderable))) {
       await this.ensureWebGpuRenderer();
     }
   }
@@ -306,65 +315,17 @@ export class ThreeViewport {
   }
 
   createReferenceHydraRenderInterface(): ReferenceHydraRenderInterface {
-    this.clearStage();
-    this.applyViewUpAxis();
-
-    return {
-      createRPrim: (_type: string, id: string): ReferenceHydraRPrim => {
-        const existing = this.meshByPath.get(id);
-        const mesh = existing ?? new Mesh(
-          new BufferGeometry(),
-          new MeshPhysicalMaterial({
-            color: new Color(0xb8c4cf),
-            metalness: 0.05,
-            roughness: 0.55,
-            side: DoubleSide,
-          })
-        );
-        const geometry = mesh.geometry as BufferGeometry;
-        if (!existing) {
-          mesh.name = id.split("/").filter(Boolean).pop() || id;
-          mesh.matrixAutoUpdate = false;
-          this.stageRoot.add(mesh);
-          this.meshByPath.set(id, mesh);
-          this.pathByMesh.set(mesh, id);
-        }
-
-        let points = new Float32Array();
-        let indices = new Int32Array();
-
-        const updateGeometry = (): void => {
-          if (!points.length || !indices.length) return;
-          const positions = this.faceExpandAttr(points, indices, 3);
-          const positionAttr = geometry.attributes.position;
-          if (positionAttr && positionAttr.count * 3 === positions.length) {
-            (positionAttr.array as Float32Array).set(positions);
-            positionAttr.needsUpdate = true;
-          } else {
-            geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
-          }
-          this.setExpandedVertexNormals(geometry, points, indices);
-          geometry.computeBoundingSphere();
-        };
-
-        return {
-          updatePoints: (nextPoints: Float32Array): void => {
-            points = new Float32Array(nextPoints);
-            updateGeometry();
-          },
-          updateIndices: (nextIndices: Int32Array): void => {
-            indices = new Int32Array(nextIndices);
-            updateGeometry();
-          },
-          setTransform: (matrix: Float32Array): void => {
-            if (matrix.length !== 16) return;
-            mesh.matrix.set(...(Array.from(matrix) as Parameters<typeof mesh.matrix.set>));
-            mesh.matrix.transpose();
-            mesh.matrixAutoUpdate = false;
-          },
-        };
+    return createReferenceHydraRenderInterface({
+      stageRoot: this.stageRoot,
+      meshByPath: this.meshByPath,
+      pathByMesh: this.pathByMesh,
+      resetStage: () => {
+        this.clearStage();
+        this.applyViewUpAxis();
       },
-    };
+      setExpandedVertexNormals: (geometry, points, indices) =>
+        this.setExpandedVertexNormals(geometry, points, indices),
+    });
   }
 
   frameCurrentStage(): void {
@@ -523,8 +484,8 @@ export class ThreeViewport {
           const replacement = this.createSceneMesh(renderable);
           replacement.name = renderable.name || renderable.path;
           replacement.userData.ptsLen = renderable.points.length;
-          replacement.userData.ptsFingerprint = this.geometryFingerprint(renderable.points);
-          replacement.userData.materialKey = this.getRenderableMaterialKey(renderable);
+          replacement.userData.ptsFingerprint = geometryFingerprint(renderable.points);
+          replacement.userData.materialKey = getRenderableMaterialKey(renderable, this.materialXFlipV);
           replacement.userData.instanceCount = renderable.instanceMatrices?.length ?? 0;
           this.meshByPath.set(renderable.path, replacement);
           this.pathByMesh.set(replacement, renderable.path);
@@ -534,7 +495,7 @@ export class ThreeViewport {
         }
         this.applyRenderableTransform(existing, renderable);
         const len = renderable.points.length;
-        const fingerprint = this.geometryFingerprint(renderable.points);
+        const fingerprint = geometryFingerprint(renderable.points);
         if (
           forceGeometryUpdate ||
           existing.userData.ptsLen !== len ||
@@ -554,8 +515,8 @@ export class ThreeViewport {
         const mesh = this.createSceneMesh(renderable);
         mesh.name = renderable.name || renderable.path;
         mesh.userData.ptsLen = renderable.points.length;
-        mesh.userData.ptsFingerprint = this.geometryFingerprint(renderable.points);
-        mesh.userData.materialKey = this.getRenderableMaterialKey(renderable);
+        mesh.userData.ptsFingerprint = geometryFingerprint(renderable.points);
+        mesh.userData.materialKey = getRenderableMaterialKey(renderable, this.materialXFlipV);
         mesh.userData.instanceCount = renderable.instanceMatrices?.length ?? 0;
         this.meshByPath.set(renderable.path, mesh);
         this.pathByMesh.set(mesh, renderable.path);
@@ -570,7 +531,7 @@ export class ThreeViewport {
   // Never removes or rebuilds geometry — Hydra owns the geometry.
   async updateRenderablesAsync(renderables: RenderableMesh[]): Promise<void> {
     const textureLoads: Promise<void>[] = [];
-    if (renderables.some((renderable) => this.renderableHasMaterialX(renderable))) {
+    if (renderables.some((renderable) => renderableHasMaterialX(renderable))) {
       await this.ensureWebGpuRenderer();
     }
     for (const renderable of renderables) {
@@ -580,12 +541,12 @@ export class ThreeViewport {
       // Hydra skips UV extraction for skinned meshes — inject from legacy data.
       if (renderable.uvs?.length) {
         const shouldRewriteUvs =
-          !existing.geometry.attributes.uv || this.renderableHasMaterialX(renderable);
+          !existing.geometry.attributes.uv || renderableHasMaterialX(renderable);
         if (shouldRewriteUvs) {
-          const faceUvs = this.faceExpandAttr(renderable.uvs as number[], renderable.indices as number[], 2);
+          const faceUvs = faceExpandAttr(renderable.uvs as number[], renderable.indices as number[], 2);
           if (existing.geometry.attributes.position?.count === faceUvs.length / 2) {
             const uvAttr = new Float32BufferAttribute(faceUvs, 2);
-            this.applyMaterialXUvOptions(uvAttr, renderable);
+            applyMaterialXUvOptions(uvAttr, renderable, this.materialXFlipV);
             existing.geometry.setAttribute("uv", uvAttr);
             existing.geometry.setAttribute("uv1", uvAttr.clone());
           }
@@ -599,7 +560,7 @@ export class ThreeViewport {
 
   private createRenderableMaterials(renderable: RenderableMesh): Material | Material[] {
     if (renderable.materialSubsets?.length) {
-      return this.getUniqueSubsetMaterials(renderable).map((material) =>
+      return getUniqueSubsetMaterials(renderable).map((material) =>
         this.createMaterialForRenderable(renderable, material)
       );
     }
@@ -661,16 +622,22 @@ export class ThreeViewport {
     renderable: RenderableMesh,
     textureLoads?: Promise<void>[]
   ): void {
-    const nextMaterials = this.createRenderableMaterials(renderable);
+    const materialSources = renderable.materialSubsets?.length
+      ? getUniqueSubsetMaterials(renderable)
+      : [renderable.material];
     const currentIsArray = Array.isArray(mesh.material);
-    const nextIsArray = Array.isArray(nextMaterials);
-    const nextHasMaterialX = this.renderableHasMaterialX(renderable);
+    const nextIsArray = !!renderable.materialSubsets?.length;
+    const nextHasMaterialX = renderableHasMaterialX(renderable);
     const currentHasMaterialX = this.meshHasMaterialXMaterial(mesh);
-    const nextMaterialKey = this.getRenderableMaterialKey(renderable);
+    const nextMaterialKey = getRenderableMaterialKey(renderable, this.materialXFlipV);
+    // Build fresh materials only when the key or shape changed. Building them
+    // unconditionally re-parsed MaterialX on every update and leaked the
+    // discarded (undisposed) materials.
     if (currentIsArray !== nextIsArray ||
         currentHasMaterialX !== nextHasMaterialX ||
         mesh.userData.materialKey !== nextMaterialKey ||
-        (nextIsArray && (mesh.material as Material[]).length !== nextMaterials.length)) {
+        (nextIsArray && (mesh.material as Material[]).length !== materialSources.length)) {
+      const nextMaterials = this.createRenderableMaterials(renderable);
       this.disposeMeshMaterials(mesh);
       mesh.material = nextMaterials;
       mesh.userData.materialKey = nextMaterialKey;
@@ -679,9 +646,6 @@ export class ThreeViewport {
     const materials = Array.isArray(mesh.material)
       ? mesh.material
       : [mesh.material];
-    const materialSources = renderable.materialSubsets?.length
-      ? this.getUniqueSubsetMaterials(renderable)
-      : [renderable.material];
 
     for (let index = 0; index < materials.length; ++index) {
       const material = materials[index];
@@ -753,31 +717,11 @@ export class ThreeViewport {
     }
   }
 
-  private renderableHasMaterialX(renderable: RenderableMesh): boolean {
-    if (renderable.material?.materialX) {
-      return true;
-    }
-    return (renderable.materialSubsets ?? []).some((subset) => !!subset.material?.materialX);
-  }
-
   private meshHasMaterialXMaterial(mesh: Mesh): boolean {
     const materials = Array.isArray(mesh.material)
       ? mesh.material
       : [mesh.material];
     return materials.some((material) => material.userData.webviewMaterialX === true);
-  }
-
-  private getRenderableMaterialKey(renderable: RenderableMesh): string {
-    const materials = renderable.materialSubsets?.length
-      ? this.getUniqueSubsetMaterials(renderable)
-      : [renderable.material];
-    return materials.map((material) => {
-      const materialX = material?.materialX;
-      if (materialX) {
-        return `mtlx:${this.materialXFlipV ? "flipv" : "noflipv"}:${materialX.path}:${materialX.materialName ?? ""}`;
-      }
-      return material?.path ?? "default";
-    }).join("|");
   }
 
   private createMaterial(
@@ -863,7 +807,7 @@ export class ThreeViewport {
   // Preserves UVs, normals/tangents re-computed from the original indexed topology.
   // Falls back to full rebuild only when vertex count changes (topology shift).
   private updateGeometryPositions(geo: BufferGeometry, renderable: RenderableMesh): void {
-    const pos = this.faceExpandAttr(renderable.points as number[], renderable.indices as number[], 3);
+    const pos = faceExpandAttr(renderable.points as number[], renderable.indices as number[], 3);
     const posAttr = geo.attributes.position;
     if (posAttr && posAttr.count * 3 === pos.length) {
       // Same vertex count — update in place, keep UVs untouched
@@ -893,28 +837,13 @@ export class ThreeViewport {
     geo.computeBoundingSphere();
   }
 
-  // Face-expand: for each index, copy `stride` floats from `data`. Matches the
-  // reference ThreeJsRenderDelegate.updateOrder() pattern — no setIndex() needed.
-  private faceExpandAttr(
-    data: ArrayLike<number>,
-    indices: ArrayLike<number>,
-    stride: number
-  ): Float32Array {
-    const out = new Float32Array(indices.length * stride);
-    for (let i = 0; i < indices.length; i++) {
-      const s = indices[i] * stride;
-      for (let j = 0; j < stride; j++) out[i * stride + j] = data[s + j];
-    }
-    return out;
-  }
-
   private buildGeometry(renderable: RenderableMesh): BufferGeometry {
     const { points, indices, uvs } = renderable;
     const geo = new BufferGeometry();
-    geo.setAttribute("position", new Float32BufferAttribute(this.faceExpandAttr(points, indices, 3), 3));
+    geo.setAttribute("position", new Float32BufferAttribute(faceExpandAttr(points, indices, 3), 3));
     if (uvs?.length) {
-      const uvAttr = new Float32BufferAttribute(this.faceExpandAttr(uvs, indices, 2), 2);
-      this.applyMaterialXUvOptions(uvAttr, renderable);
+      const uvAttr = new Float32BufferAttribute(faceExpandAttr(uvs, indices, 2), 2);
+      applyMaterialXUvOptions(uvAttr, renderable, this.materialXFlipV);
       geo.setAttribute("uv", uvAttr);
       geo.setAttribute("uv1", uvAttr.clone());
     }
@@ -934,7 +863,7 @@ export class ThreeViewport {
     const slots = new Map<string, number>();
     for (let index = 0; index < renderable.materialSubsets.length; ++index) {
       const subset = renderable.materialSubsets[index];
-      const key = this.getSubsetMaterialKey(subset.material, subset.path);
+      const key = getSubsetMaterialKey(subset.material, subset.path);
       if (!slots.has(key)) {
         slots.set(key, slots.size);
       }
@@ -942,40 +871,13 @@ export class ThreeViewport {
     }
   }
 
-  private applyMaterialXUvOptions(uvAttr: Float32BufferAttribute, renderable: RenderableMesh): void {
-    if (!this.materialXFlipV || !this.renderableHasMaterialX(renderable)) {
-      return;
-    }
-
-    for (let index = 0; index < uvAttr.count; index += 1) {
-      uvAttr.setY(index, 1 - uvAttr.getY(index));
-    }
-    uvAttr.needsUpdate = true;
-  }
-
-  private getUniqueSubsetMaterials(renderable: RenderableMesh): (RenderableMaterial | undefined)[] {
-    const materials: (RenderableMaterial | undefined)[] = [];
-    const seen = new Set<string>();
-    for (const subset of renderable.materialSubsets ?? []) {
-      const key = this.getSubsetMaterialKey(subset.material, subset.path);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      materials.push(subset.material);
-    }
-    return materials;
-  }
-
-  private getSubsetMaterialKey(material: RenderableMaterial | undefined, fallbackPath: string): string {
-    return material?.path ?? fallbackPath;
-  }
-
   private setExpandedVertexNormals(
     geo: BufferGeometry,
     points: ArrayLike<number>,
     indices: ArrayLike<number>
   ): void {
-    const normals = this.buildIndexedVertexNormals(points, indices);
-    geo.setAttribute("normal", new Float32BufferAttribute(this.faceExpandAttr(normals, indices, 3), 3));
+    const normals = buildIndexedVertexNormals(points, indices);
+    geo.setAttribute("normal", new Float32BufferAttribute(faceExpandAttr(normals, indices, 3), 3));
     geo.attributes.normal.needsUpdate = true;
   }
 
@@ -1007,9 +909,9 @@ export class ThreeViewport {
       indexedGeometry.setAttribute("position", new Float32BufferAttribute(new Float32Array(points), 3));
 
       const uvAttribute = new Float32BufferAttribute(new Float32Array(uvs), 2);
-      this.applyMaterialXUvOptions(uvAttribute, renderable);
+      applyMaterialXUvOptions(uvAttribute, renderable, this.materialXFlipV);
       indexedGeometry.setAttribute("uv", uvAttribute);
-      indexedGeometry.setAttribute("normal", new Float32BufferAttribute(this.buildIndexedVertexNormals(points, indices), 3));
+      indexedGeometry.setAttribute("normal", new Float32BufferAttribute(buildIndexedVertexNormals(points, indices), 3));
       indexedGeometry.setIndex(Array.from(indices, (value) => Number(value)));
       indexedGeometry.computeTangents();
 
@@ -1019,7 +921,7 @@ export class ThreeViewport {
         return null;
       }
 
-      return new Float32BufferAttribute(this.faceExpandAttr(tangent.array as ArrayLike<number>, indices, 4), 4);
+      return new Float32BufferAttribute(faceExpandAttr(tangent.array as ArrayLike<number>, indices, 4), 4);
     } catch (error) {
       console.warn("[USD WebView] Failed to compute tangents for mesh geometry", {
         path: renderable.path,
@@ -1031,72 +933,6 @@ export class ThreeViewport {
     } finally {
       indexedGeometry.dispose();
     }
-  }
-
-  private buildIndexedVertexNormals(
-    points: ArrayLike<number>,
-    indices: ArrayLike<number>
-  ): Float32Array {
-    const normals = new Float32Array(points.length);
-    const weldedNormals = new Map<string, Vector3>();
-    const weldedVertexIndices = new Map<string, number[]>();
-
-    for (let i = 0; i + 2 < indices.length; i += 3) {
-      const ia = Number(indices[i]);
-      const ib = Number(indices[i + 1]);
-      const ic = Number(indices[i + 2]);
-
-      const ax = points[ia * 3];
-      const ay = points[ia * 3 + 1];
-      const az = points[ia * 3 + 2];
-      const bx = points[ib * 3];
-      const by = points[ib * 3 + 1];
-      const bz = points[ib * 3 + 2];
-      const cx = points[ic * 3];
-      const cy = points[ic * 3 + 1];
-      const cz = points[ic * 3 + 2];
-
-      const abx = bx - ax;
-      const aby = by - ay;
-      const abz = bz - az;
-      const acx = cx - ax;
-      const acy = cy - ay;
-      const acz = cz - az;
-
-      const nx = aby * acz - abz * acy;
-      const ny = abz * acx - abx * acz;
-      const nz = abx * acy - aby * acx;
-
-      for (const vertexIndex of [ia, ib, ic]) {
-        const offset = vertexIndex * 3;
-        const key = this.normalWeldKey(points[offset], points[offset + 1], points[offset + 2]);
-        const accumulated = weldedNormals.get(key) ?? new Vector3();
-        accumulated.x += nx;
-        accumulated.y += ny;
-        accumulated.z += nz;
-        weldedNormals.set(key, accumulated);
-        const indicesForKey = weldedVertexIndices.get(key) ?? [];
-        indicesForKey.push(vertexIndex);
-        weldedVertexIndices.set(key, indicesForKey);
-      }
-    }
-
-    for (const [key, accumulated] of weldedNormals) {
-      const length = accumulated.length();
-      if (length > 0) {
-        accumulated.divideScalar(length);
-      } else {
-        accumulated.set(0, 0, 1);
-      }
-      for (const vertexIndex of weldedVertexIndices.get(key) ?? []) {
-        const offset = vertexIndex * 3;
-        normals[offset] = accumulated.x;
-        normals[offset + 1] = accumulated.y;
-        normals[offset + 2] = accumulated.z;
-      }
-    }
-
-    return normals;
   }
 
   private warnIfMaterialXNeedsTangents(renderable: RenderableMesh, detail: string): void {
@@ -1156,23 +992,6 @@ export class ThreeViewport {
       /(?:normalmap|gltf_normalmap|hextilednormalmap|<\s*bump\b|<\s*tangent\b|<\s*bitangent\b)/.test(text) ||
       /name\s*=\s*["'](?:normal|coat_normal|geometry_coat_normal|specular_anisotropy|specular_rotation|anisotropy_strength|anisotropy_rotation)["']/.test(text)
     );
-  }
-
-  private normalWeldKey(x: number, y: number, z: number): string {
-    const precision = 1e5;
-    return `${Math.round(x * precision)}:${Math.round(y * precision)}:${Math.round(z * precision)}`;
-  }
-
-  private geometryFingerprint(points: ArrayLike<number>): string {
-    if (!points.length) return "0";
-    const samples = 8;
-    const last = points.length - 1;
-    let hash = `${points.length}`;
-    for (let i = 0; i < samples; i++) {
-      const index = Math.min(last, Math.floor((last * i) / (samples - 1)));
-      hash += `:${points[index].toPrecision(7)}`;
-    }
-    return hash;
   }
 
   private clearStage(): void {

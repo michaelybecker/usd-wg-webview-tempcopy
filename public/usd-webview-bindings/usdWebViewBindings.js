@@ -1,5 +1,5 @@
-const _wasmBuildId = "extcomp-sprim-2026-06-23a"; // bump on every WASM rebuild to bust browser cache
-const _wrapperBuildId = "extcomp-sprim-2026-06-23a";
+const _wasmBuildId = "wasm-e8a96be3c520"; // stamped by tools/native-build/stamp-build.mjs
+const _wrapperBuildId = "wasm-e8a96be3c520";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
