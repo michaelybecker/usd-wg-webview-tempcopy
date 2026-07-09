@@ -311,7 +311,7 @@ export class UsdWebViewRuntime {
   }
 }
 
-function attachMaterialXResources(
+export function attachMaterialXResources(
   material: RenderableMesh["material"],
   resources: RenderableTexture[]
 ): void {
@@ -321,11 +321,11 @@ function attachMaterialXResources(
   material.materialX.resources = resources;
 }
 
-function isMaterialXResourcePath(path: string): boolean {
+export function isMaterialXResourcePath(path: string): boolean {
   return /\.(png|jpe?g|webp|svg)$/i.test(path);
 }
 
-function mimeTypeForPath(path: string): string {
+export function mimeTypeForPath(path: string): string {
   const lower = path.toLowerCase();
   if (lower.endsWith(".hdr")) return "image/vnd.radiance";
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
@@ -383,7 +383,7 @@ function loadRuntimeEntrypoint(source: string): Promise<void> {
   });
 }
 
-function normalizeStageSummary(
+export function normalizeStageSummary(
   rootFile: string,
   summary: StageSummary | null
 ): StageSummary {

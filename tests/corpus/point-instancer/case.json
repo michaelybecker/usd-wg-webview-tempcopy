@@ -1,0 +1,5 @@
+{
+  "id": "point-instancer",
+  "rootFile": "scene.usda",
+  "captures": [{ "name": "default" }]
+}

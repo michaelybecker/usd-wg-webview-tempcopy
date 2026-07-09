@@ -1,0 +1,19 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def ParticleField3DGaussianSplat "Splats"
+    {
+        custom point3f[] positions = [(-1, 0, 0), (0, 1.2, 0), (1, 0, 0)]
+        custom float3[] scales = [(0.4, 0.4, 0.4), (0.3, 0.5, 0.3), (0.4, 0.4, 0.4)]
+        custom quatf[] orientations = [(1, 0, 0, 0), (1, 0, 0, 0), (1, 0, 0, 0)]
+        custom float[] opacities = [1, 1, 1]
+        custom float3[] radiance:sphericalHarmonicsCoefficients = [(1.77, -1.06, -1.06), (-1.06, 1.77, -1.06), (-1.06, -1.06, 1.77)]
+        custom int radiance:sphericalHarmonicsDegree = 0
+    }
+}

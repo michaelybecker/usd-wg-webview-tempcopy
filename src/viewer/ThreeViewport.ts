@@ -267,7 +267,12 @@ export class ThreeViewport {
       this.removeGameNavigationHandlers();
       this.controls.dispose();
 
-      const renderer = new WebGPURenderer({ antialias: true, alpha: false });
+      // Automation/CI escape hatch: headless Chromium cannot present WebGPU
+      // canvases, so ?forceWebGL=1 runs the same renderer (and the MaterialX
+      // TSL node path) on its WebGL2 backend instead.
+      const forceWebGL =
+        new URLSearchParams(window.location.search).get("forceWebGL") === "1";
+      const renderer = new WebGPURenderer({ antialias: true, alpha: false, forceWebGL });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.outputColorSpace = previousRenderer.outputColorSpace;
       renderer.toneMapping = previousRenderer.toneMapping;

@@ -1,0 +1,80 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World" (
+    variants = {
+        string modelingVariant = "cube"
+        string shadingVariant = "red"
+    }
+    prepend variantSets = ["modelingVariant", "shadingVariant"]
+)
+{
+    def Scope "Materials"
+    {
+        def Material "Red"
+        {
+            token outputs:surface.connect = </World/Materials/Red/Shader.outputs:surface>
+
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.85, 0.12, 0.1)
+                float inputs:roughness = 0.5
+                token outputs:surface
+            }
+        }
+
+        def Material "Green"
+        {
+            token outputs:surface.connect = </World/Materials/Green/Shader.outputs:surface>
+
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.1, 0.7, 0.2)
+                float inputs:roughness = 0.5
+                token outputs:surface
+            }
+        }
+    }
+    variantSet "modelingVariant" = {
+        "cube" {
+            def Mesh "Geo" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+                int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4]
+                point3f[] points = [(-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (-0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5), (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5)]
+            }
+        }
+        "pyramid" {
+            def Mesh "Geo" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                int[] faceVertexCounts = [4, 3, 3, 3, 3]
+                int[] faceVertexIndices = [0, 3, 2, 1, 0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4]
+                point3f[] points = [(-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (0.5, -0.5, -0.5), (-0.5, -0.5, -0.5), (0, 0.7, 0)]
+            }
+        }
+    }
+    variantSet "shadingVariant" = {
+        "red" {
+            over "Geo"
+            {
+                rel material:binding = </World/Materials/Red>
+            }
+        }
+        "green" {
+            over "Geo"
+            {
+                rel material:binding = </World/Materials/Green>
+            }
+        }
+    }
+}

@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 8000 --strictPort",
+    "test": "vitest run && node tools/regression/run.mjs",
+    "test:unit": "vitest run",
+    "test:regression": "node tools/regression/run.mjs",
+    "test:regression:bless": "node tools/regression/run.mjs --update-baselines",
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 8000 --strictPort",
     "usd-material-fidelity": "node tools/usd-material-fidelity/run.mjs",
@@ -22,6 +26,7 @@
     "playwright": "^1.54.1",
     "pngjs": "^7.0.0",
     "typescript": "^5.4.5",
-    "vite": "^5.2.13"
+    "vite": "^5.2.13",
+    "vitest": "^4.1.10"
   }
 }

@@ -1,0 +1,26 @@
+{
+  "id": "variants",
+  "rootFile": "scene.usda",
+  "captures": [
+    { "name": "default" },
+    {
+      "name": "modeling-pyramid",
+      "variantSelections": [
+        { "primPath": "/World", "variantSet": "modelingVariant", "selection": "pyramid" }
+      ]
+    },
+    {
+      "name": "shading-green",
+      "variantSelections": [
+        { "primPath": "/World", "variantSet": "shadingVariant", "selection": "green" }
+      ]
+    },
+    {
+      "name": "back-to-cube-red",
+      "variantSelections": [
+        { "primPath": "/World", "variantSet": "modelingVariant", "selection": "cube" },
+        { "primPath": "/World", "variantSet": "shadingVariant", "selection": "red" }
+      ]
+    }
+  ]
+}

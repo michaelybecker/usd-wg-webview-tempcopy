@@ -83,7 +83,7 @@ function compareByConvention(a: File, b: File): number {
   return pathOf(a).localeCompare(pathOf(b));
 }
 
-function isUsdFile(file: File): boolean {
+export function isUsdFile(file: File): boolean {
   return USD_EXTENSIONS.has(extensionOf(file.name));
 }
 

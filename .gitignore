@@ -17,3 +17,5 @@ tools/usd-material-fidelity/generated/
 tools/usd-material-fidelity/results/
 tools/usd-material-fidelity/reports/
 tools/usd-material-fidelity/work/
+tools/regression/generated/
+tools/regression/results/

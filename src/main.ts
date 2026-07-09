@@ -53,6 +53,14 @@ type AutomationApi = {
   getState(): AutomationState;
   waitForReady(timeoutMs?: number): Promise<AutomationState>;
   loadManifest(manifestUrl: string, timeoutMs?: number): Promise<AutomationState>;
+  setTime(timeCode: number): Promise<void>;
+  setVariantSelection(
+    primPath: string,
+    variantSetName: string,
+    selection: string
+  ): Promise<boolean>;
+  setPayloadLoaded(primPath: string, loaded: boolean): Promise<boolean>;
+  settle(frameCount?: number): Promise<void>;
 };
 
 declare global {
@@ -1725,6 +1733,45 @@ window.__USD_WEBVIEW_AUTOMATION__ = {
   async loadManifest(manifestUrl: string, timeoutMs = 30000): Promise<AutomationState> {
     await loadAutomationManifestStage(manifestUrl);
     return waitForAutomationReady(timeoutMs);
+  },
+  // The mutation entrypoints below intentionally re-use the exact code paths
+  // the UI handlers hit (scrubber input, variant select, payload badge) so
+  // automation captures exercise real user behavior.
+  async setTime(timeCode: number): Promise<void> {
+    animCurrent = timeCode;
+    updatePlaybarScrubber();
+    sampleAnimationFrame(timeCode);
+    await waitForSettledFrames();
+  },
+  async setVariantSelection(
+    primPath: string,
+    variantSetName: string,
+    selection: string
+  ): Promise<boolean> {
+    const changed = runtime.setVariantSelection(primPath, variantSetName, selection);
+    if (!changed) {
+      return false;
+    }
+    const normalizedVariantSet = variantSetName.toLowerCase();
+    if (!normalizedVariantSet.includes("shading") && !normalizedVariantSet.includes("material")) {
+      runtime.resetHydraDrivers();
+    }
+    await applyVariantChange(primPath, variantSetName);
+    await waitForSettledFrames();
+    return true;
+  },
+  async setPayloadLoaded(primPath: string, loaded: boolean): Promise<boolean> {
+    const changed = runtime.setPayloadLoaded(primPath, loaded);
+    await applyVariantChange(
+      primPath,
+      undefined,
+      loaded ? "loading payload..." : "unloading payload..."
+    );
+    await waitForSettledFrames();
+    return changed;
+  },
+  async settle(frameCount?: number): Promise<void> {
+    await waitForSettledFrames(frameCount);
   },
 };
 
