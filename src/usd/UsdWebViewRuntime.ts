@@ -95,6 +95,13 @@ export class UsdWebViewRuntime {
     this.hydraSyncDriver?.delete?.();
     this.hydraSyncDriver = null;
 
+    // Release the previous stage's native caches and MEMFS files before
+    // writing the new stage's files.
+    if (this.currentStagePath) {
+      this.bindings.closeStage?.(this.currentStagePath);
+      this.currentStagePath = null;
+    }
+
     const materialXResources: RenderableTexture[] = [];
     for (const file of request.files) {
       const path = file.webkitRelativePath || file.name;

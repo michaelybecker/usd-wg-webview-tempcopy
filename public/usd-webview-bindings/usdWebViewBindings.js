@@ -1,5 +1,5 @@
-const _wasmBuildId = "wasm-2169ac058886"; // stamped by tools/native-build/stamp-build.mjs
-const _wrapperBuildId = "wasm-2169ac058886";
+const _wasmBuildId = "wasm-47daac91366c"; // stamped by tools/native-build/stamp-build.mjs
+const _wrapperBuildId = "wasm-47daac91366c";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
@@ -119,6 +119,19 @@ window.UsdWebViewBindings = {
           _originalLayerData.set(filePath, data.slice());
         }
         writeToVfs(filePath, data);
+      },
+      closeStage(path) {
+        if (module.CloseStage) {
+          module.CloseStage(normalizePath(path));
+        }
+        // Stage loads are whole-world replacements, so every tracked data
+        // file belongs to the outgoing stage: unlink them all from MEMFS.
+        for (const filePath of _originalLayerData.keys()) {
+          if (module.FS_analyzePath(filePath).exists) {
+            module.FS_unlink(filePath);
+          }
+        }
+        _originalLayerData.clear();
       },
       extractRenderables(path) {
         return module.ExtractRenderables(normalizePath(path));

@@ -187,6 +187,7 @@ export type ReferenceHydraDriver = {
 export type UsdWebViewBindings = {
   ready?: Promise<unknown>;
   createDataFile?: (path: string, data: Uint8Array) => void;
+  closeStage?: (path: string) => void;
   extractRenderables?: (path: string) => RenderableMesh[];
   extractRenderablesWithMaterials?: (path: string) => RenderableMesh[];
   extractRenderablesWithMaterialsUnderRoot?: (path: string, primPath: string) => RenderableMesh[];

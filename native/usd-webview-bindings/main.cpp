@@ -117,6 +117,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -1519,9 +1520,40 @@ private:
     double _timeCodesPerSecond = 24.0;
 };
 
-std::unordered_map<std::string, std::unique_ptr<HydraAnimationDriver>>
-    g_hydraAnimationDrivers;
-std::unordered_map<std::string, std::string> g_lastSkelBindingOverlayContents;
+// One record per stage path: consolidates every per-stage cache that used to
+// live in separate g_* maps so open/invalidate/close stay coherent and
+// CloseStage can drop everything at once.
+struct StageRecord
+{
+    UsdStageRefPtr stage;
+    bool loadAllPayloadsOnOpen = true;
+    std::unique_ptr<UsdSkelCache> skelCache;
+    std::optional<bool> hasSkelRoot;
+    std::unordered_map<std::string, UsdSkelSkeleton> skinningSkeletonByPrim;
+    std::optional<int> authoredLegacySkelBindingTargets;
+    std::optional<LegacySkelBindingAuthoringDiagnostics>
+        legacySkelBindingDiagnostics;
+    std::unique_ptr<HydraAnimationDriver> hydraAnimationDriver;
+    std::string lastSkelBindingOverlayContents;
+
+    void ResetDerivedCaches()
+    {
+        skelCache.reset();
+        hasSkelRoot.reset();
+        skinningSkeletonByPrim.clear();
+        hydraAnimationDriver.reset();
+        authoredLegacySkelBindingTargets.reset();
+        legacySkelBindingDiagnostics.reset();
+    }
+};
+
+std::unordered_map<std::string, StageRecord> g_stageRegistry;
+
+StageRecord&
+_GetStageRecord(const std::string& path)
+{
+    return g_stageRegistry[path];
+}
 
 int
 _CountPrims(const UsdStageRefPtr& stage)
@@ -2609,7 +2641,7 @@ _CreateSkelBindingOverlayStage(
         }
         return nullptr;
     }
-    g_lastSkelBindingOverlayContents[stagePath] = overlayContents;
+    _GetStageRecord(stagePath).lastSkelBindingOverlayContents = overlayContents;
     return UsdStage::Open(overlayLayer);
 }
 
@@ -3871,15 +3903,6 @@ _ExtractSkinnedControlPoints(
 
 // Cache to avoid re-opening the stage on every ExtractTransformsAtTime call.
 // Key is the normalized stage path passed by the JS caller.
-static std::unordered_map<std::string, UsdStageRefPtr> g_stageCache;
-static std::unordered_map<std::string, bool> g_stageLoadAllPayloadsOnOpen;
-static std::unordered_map<std::string, std::unique_ptr<UsdSkelCache>> g_skelCache;
-static std::unordered_map<std::string, bool> g_stageHasSkelRoot;
-static std::unordered_map<std::string, std::unordered_map<std::string, UsdSkelSkeleton>>
-    g_skinningSkeletonByStageAndPrim;
-static std::unordered_map<std::string, int> g_authoredLegacySkelBindingTargets;
-static std::unordered_map<std::string, LegacySkelBindingAuthoringDiagnostics>
-    g_legacySkelBindingAuthoringDiagnostics;
 
 UsdStageRefPtr
 _OpenStageWithPayloadPolicy(const std::string& path, bool loadAllPayloads)
@@ -3892,14 +3915,15 @@ _OpenStageWithPayloadPolicy(const std::string& path, bool loadAllPayloads)
 UsdStageRefPtr
 _GetOrOpenStage(const std::string& path, bool loadAllPayloads)
 {
-    auto it = g_stageCache.find(path);
-    if (it != g_stageCache.end()) {
-        return it->second;
+    auto it = g_stageRegistry.find(path);
+    if (it != g_stageRegistry.end() && it->second.stage) {
+        return it->second.stage;
     }
     UsdStageRefPtr stage = _OpenStageWithPayloadPolicy(path, loadAllPayloads);
     if (stage) {
-        g_stageCache[path] = stage;
-        g_stageLoadAllPayloadsOnOpen[path] = loadAllPayloads;
+        StageRecord& record = _GetStageRecord(path);
+        record.stage = stage;
+        record.loadAllPayloadsOnOpen = loadAllPayloads;
     }
     return stage;
 }
@@ -3907,40 +3931,36 @@ _GetOrOpenStage(const std::string& path, bool loadAllPayloads)
 void
 _InvalidateDerivedStageCaches(const std::string& path)
 {
-    g_skelCache.erase(path);
-    g_stageHasSkelRoot.erase(path);
-    g_skinningSkeletonByStageAndPrim.erase(path);
-    g_hydraAnimationDrivers.erase(path);
-    g_authoredLegacySkelBindingTargets.erase(path);
-    g_legacySkelBindingAuthoringDiagnostics.erase(path);
+    auto it = g_stageRegistry.find(path);
+    if (it != g_stageRegistry.end()) {
+        it->second.ResetDerivedCaches();
+    }
 }
 
 UsdSkelCache*
 _GetOrPopulateSkelCache(const std::string& path, const UsdStageRefPtr& stage)
 {
-    if (g_authoredLegacySkelBindingTargets.find(path) ==
-        g_authoredLegacySkelBindingTargets.end()) {
+    StageRecord& record = _GetStageRecord(path);
+    if (!record.authoredLegacySkelBindingTargets.has_value()) {
         LegacySkelBindingAuthoringDiagnostics diagnostics;
         if (stage && stage->GetSessionLayer()) {
             diagnostics.sessionLayerIdentifier =
                 stage->GetSessionLayer()->GetIdentifier();
         }
-        g_authoredLegacySkelBindingTargets[path] = 0;
-        g_legacySkelBindingAuthoringDiagnostics[path] = diagnostics;
+        record.authoredLegacySkelBindingTargets = 0;
+        record.legacySkelBindingDiagnostics = diagnostics;
     }
 
-    auto hasIt = g_stageHasSkelRoot.find(path);
-    if (hasIt != g_stageHasSkelRoot.end() && !hasIt->second) {
+    if (record.hasSkelRoot.has_value() && !*record.hasSkelRoot) {
         return nullptr;
     }
 
-    auto cacheIt = g_skelCache.find(path);
-    if (cacheIt != g_skelCache.end()) {
-        return cacheIt->second.get();
+    if (record.skelCache) {
+        return record.skelCache.get();
     }
 
     auto cache = std::make_unique<UsdSkelCache>();
-    auto& skeletonByPrim = g_skinningSkeletonByStageAndPrim[path];
+    auto& skeletonByPrim = record.skinningSkeletonByPrim;
     skeletonByPrim.clear();
     bool hasSkelRoot = false;
     for (const UsdPrim& prim : UsdPrimRange(stage->GetPseudoRoot())) {
@@ -3965,25 +3985,26 @@ _GetOrPopulateSkelCache(const std::string& path, const UsdStageRefPtr& stage)
         }
     }
 
-    g_stageHasSkelRoot[path] = hasSkelRoot;
+    record.hasSkelRoot = hasSkelRoot;
     if (!hasSkelRoot) {
         return nullptr;
     }
 
     UsdSkelCache* result = cache.get();
-    g_skelCache[path] = std::move(cache);
+    record.skelCache = std::move(cache);
     return result;
 }
 
 UsdSkelSkeleton
 _FindSkeletonForSkinnedPrim(const std::string& stagePath, const UsdPrim& prim)
 {
-    auto stageIt = g_skinningSkeletonByStageAndPrim.find(stagePath);
-    if (stageIt == g_skinningSkeletonByStageAndPrim.end()) {
+    auto stageIt = g_stageRegistry.find(stagePath);
+    if (stageIt == g_stageRegistry.end()) {
         return UsdSkelSkeleton();
     }
-    auto primIt = stageIt->second.find(prim.GetPath().GetString());
-    if (primIt != stageIt->second.end()) {
+    const auto& skeletonByPrim = stageIt->second.skinningSkeletonByPrim;
+    auto primIt = skeletonByPrim.find(prim.GetPath().GetString());
+    if (primIt != skeletonByPrim.end()) {
         return primIt->second;
     }
 
@@ -4012,10 +4033,10 @@ GetRuntimeDiagnostics()
 std::string
 GetLastSkelBindingOverlayContents(const std::string& stagePath)
 {
-    auto it = g_lastSkelBindingOverlayContents.find(stagePath);
-    return it == g_lastSkelBindingOverlayContents.end()
+    auto it = g_stageRegistry.find(stagePath);
+    return it == g_stageRegistry.end()
         ? std::string()
-        : it->second;
+        : it->second.lastSkelBindingOverlayContents;
 }
 
 emscripten::val
@@ -4124,17 +4145,13 @@ GetSkelDebugInfo(
 
     UsdSkelCache* skelCache = _GetOrPopulateSkelCache(stagePath, stage);
     info.set("hasSkelCache", skelCache != nullptr);
-    auto authoredIt = g_authoredLegacySkelBindingTargets.find(stagePath);
+    const StageRecord& debugRecord = _GetStageRecord(stagePath);
     info.set(
         "authoredLegacySkelBindingTargetCount",
-        authoredIt == g_authoredLegacySkelBindingTargets.end()
-            ? 0
-            : authoredIt->second);
-    auto authoringDiagIt =
-        g_legacySkelBindingAuthoringDiagnostics.find(stagePath);
-    if (authoringDiagIt != g_legacySkelBindingAuthoringDiagnostics.end()) {
+        debugRecord.authoredLegacySkelBindingTargets.value_or(0));
+    if (debugRecord.legacySkelBindingDiagnostics.has_value()) {
         const LegacySkelBindingAuthoringDiagnostics& diag =
-            authoringDiagIt->second;
+            *debugRecord.legacySkelBindingDiagnostics;
         info.set("legacyAuthorSkeletonPrims", diag.skeletonPrims);
         info.set("legacyAuthorAnimationTargets", diag.animationTargets);
         info.set("legacyAuthorMeshPrims", diag.meshPrims);
@@ -4439,7 +4456,7 @@ emscripten::val
 OpenStage(const std::string& path, bool loadAllPayloads = true)
 {
     _InvalidateDerivedStageCaches(path);
-    g_stageCache.erase(path);
+    g_stageRegistry.erase(path);
     UsdStageRefPtr stage = _GetOrOpenStage(path, loadAllPayloads);
     if (!stage) {
         return _ErrorResult(path, "Unable to open USD stage");
@@ -4610,7 +4627,10 @@ ReopenStage(const std::string& stagePath)
     SdfLayerHandle layer = SdfLayer::Find(stagePath);
     _InvalidateDerivedStageCaches(stagePath);
 
-    if (layer && g_stageCache.count(stagePath)) {
+    auto registryIt = g_stageRegistry.find(stagePath);
+    const bool hasCachedStage =
+        registryIt != g_stageRegistry.end() && registryIt->second.stage;
+    if (layer && hasCachedStage) {
         // Fast path: reload fires SdfNotice::LayersDidChange to the living
         // stage. USD's PCP change-processing recomposes only the prim subtrees
         // whose fields actually changed (e.g. one VariantSelection field) —
@@ -4625,14 +4645,12 @@ ReopenStage(const std::string& stagePath)
     if (layer) {
         layer->Reload(/* force= */ true);
     }
-    g_stageCache.erase(stagePath);
-    const auto loadIt = g_stageLoadAllPayloadsOnOpen.find(stagePath);
-    const bool loadAllPayloads =
-        loadIt == g_stageLoadAllPayloadsOnOpen.end() ? true : loadIt->second;
+    StageRecord& record = _GetStageRecord(stagePath);
+    record.stage.Reset();
     UsdStageRefPtr newStage =
-        _OpenStageWithPayloadPolicy(stagePath, loadAllPayloads);
+        _OpenStageWithPayloadPolicy(stagePath, record.loadAllPayloadsOnOpen);
     if (!newStage) return false;
-    g_stageCache[stagePath] = newStage;
+    record.stage = newStage;
     return true;
 }
 
@@ -4886,9 +4904,9 @@ ExtractGaussianSplats(const std::string& path)
 HydraAnimationDriver*
 _GetOrCreateHydraAnimationDriver(const std::string& stagePath)
 {
-    auto it = g_hydraAnimationDrivers.find(stagePath);
-    if (it != g_hydraAnimationDrivers.end()) {
-        return it->second.get();
+    StageRecord& record = _GetStageRecord(stagePath);
+    if (record.hydraAnimationDriver) {
+        return record.hydraAnimationDriver.get();
     }
 
     UsdStageRefPtr stage = _GetOrOpenStage(stagePath);
@@ -4896,9 +4914,9 @@ _GetOrCreateHydraAnimationDriver(const std::string& stagePath)
         return nullptr;
     }
 
-    g_skelCache.erase(stagePath);
-    g_stageHasSkelRoot.erase(stagePath);
-    g_skinningSkeletonByStageAndPrim.erase(stagePath);
+    record.skelCache.reset();
+    record.hasSkelRoot.reset();
+    record.skinningSkeletonByPrim.clear();
     UsdStageRefPtr driverStage = stage;
     LegacySkelBindingAuthoringDiagnostics overlayDiagnostics;
     if (UsdStageRefPtr overlayStage =
@@ -4907,20 +4925,19 @@ _GetOrCreateHydraAnimationDriver(const std::string& stagePath)
                 stage,
                 &overlayDiagnostics)) {
         driverStage = overlayStage;
-        g_authoredLegacySkelBindingTargets[stagePath] =
+        record.authoredLegacySkelBindingTargets =
             overlayDiagnostics.relationshipSpecs;
-        g_legacySkelBindingAuthoringDiagnostics[stagePath] =
-            overlayDiagnostics;
-        g_skelCache.erase(stagePath);
-        g_stageHasSkelRoot.erase(stagePath);
-        g_skinningSkeletonByStageAndPrim.erase(stagePath);
+        record.legacySkelBindingDiagnostics = overlayDiagnostics;
+        record.skelCache.reset();
+        record.hasSkelRoot.reset();
+        record.skinningSkeletonByPrim.clear();
         _GetOrPopulateSkelCache(stagePath, driverStage);
     }
     auto driver = std::make_unique<HydraAnimationDriver>(
         stagePath,
         driverStage);
     HydraAnimationDriver* ptr = driver.get();
-    g_hydraAnimationDrivers[stagePath] = std::move(driver);
+    record.hydraAnimationDriver = std::move(driver);
     return ptr;
 }
 
@@ -5492,9 +5509,19 @@ GetReferenceHydraDriverTimeCodesPerSecond(int driverId)
         : 24.0;
 }
 
+void
+CloseStage(const std::string& stagePath)
+{
+    // Drops the stage record (composed stage, skel caches, hydra animation
+    // driver, overlay diagnostics) for a path. The JS wrapper pairs this with
+    // unlinking the stage's MEMFS files.
+    g_stageRegistry.erase(stagePath);
+}
+
 EMSCRIPTEN_BINDINGS(usdWebViewBindings)
 {
     emscripten::function("InitializeRuntime", &InitializeRuntime);
+    emscripten::function("CloseStage", &CloseStage);
     emscripten::function("CreateReferenceHydraDriver", &CreateReferenceHydraDriver);
     emscripten::function("DeleteReferenceHydraDriver", &DeleteReferenceHydraDriver);
     emscripten::function("SetReferenceHydraDriverTime", &SetReferenceHydraDriverTime);
