@@ -55,20 +55,6 @@ export type RenderableMesh = {
   color?: number[];
   material?: RenderableMaterial;
   materialSubsets?: RenderableMaterialSubset[];
-  pointComputationCount?: number;
-  usedComputedPoints?: boolean;
-  usdSkelFallbackAvailable?: boolean;
-  hydraCreatedMeshRprimCount?: number;
-  hydraCreatedExtComputationCount?: number;
-  hydraCreatedMaterialCount?: number;
-  sceneIndexPrimType?: string;
-  sceneIndexHasSkelRoot?: boolean;
-  sceneIndexSkeletonPath?: string;
-  sceneIndexAnimationSourcePath?: string;
-  sceneIndexExtComputationPrimvarCount?: number;
-  sceneIndexHasComputedPointsPrimvar?: boolean;
-  sceneIndexComputedPointsSourcePath?: string;
-  sceneIndexComputedPointsOutputName?: string;
 };
 
 export type RenderableMaterialSubset = {
@@ -119,7 +105,6 @@ export type RenderableMaterialX = RenderableTexture & {
 export type StageLoadRequest = {
   files: File[];
   rootFile?: File;
-  referenceHydraRenderInterface?: unknown;
   loadAllPayloads?: boolean;
 };
 
@@ -229,37 +214,10 @@ export type PrimAttribute = {
   variantOptions?: string[]; // defined when typeName === "variantSet"
 };
 
-export type HydraSyncDriver = {
-  SetTime: (timeCode: number) => void;
-  Draw: () => RenderableMesh[];
-  GetStartTimeCode?: () => number;
-  GetEndTimeCode?: () => number;
-  GetTimeCodesPerSecond?: () => number;
-  delete?: () => void;
-};
-
-export type ReferenceHydraDriver = {
-  SetTime: (timeCode: number) => void;
-  Draw: () => void;
-  GetStartTimeCode?: () => number;
-  GetEndTimeCode?: () => number;
-  GetTimeCodesPerSecond?: () => number;
-  delete?: () => void;
-};
-
 export type UsdWebViewBindings = {
   ready?: Promise<unknown>;
   createDataFile?: (path: string, data: Uint8Array) => void;
   closeStage?: (path: string) => void;
-  extractRenderables?: (path: string) => RenderableMesh[];
-  extractRenderablesWithMaterials?: (path: string) => RenderableMesh[];
-  extractRenderablesWithMaterialsUnderRoot?: (path: string, primPath: string) => RenderableMesh[];
-  extractRenderablesAtTime?: (path: string, timeCode: number) => RenderableMesh[];
-  extractHydraRenderablesAtTime?: (path: string, timeCode: number) => RenderableMesh[];
-  extractHydraRenderableSnapshotAtTime?: (path: string, timeCode: number) => RenderableMesh[] | null;
-  extractHydraRenderableSubtreeAtTime?: (path: string, primPath: string, timeCode: number) => RenderableMesh[] | null;
-  createHydraSyncDriver?: (path: string) => HydraSyncDriver | null;
-  createReferenceHydraDriver?: (path: string, renderInterface: unknown) => ReferenceHydraDriver | null;
   extractTransformsAtTime?: (path: string, timeCode: number) => PrimTransform[];
   openStage?: (path: string, loadAllPayloads?: boolean) => Promise<StageSummary> | StageSummary;
   inspectPrimRelationships?: (stagePath: string, primPath: string) => unknown;

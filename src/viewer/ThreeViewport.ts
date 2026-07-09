@@ -49,10 +49,6 @@ import {
   getUniqueSubsetMaterials,
   renderableHasMaterialX,
 } from "./GeometryBuilder";
-import {
-  createReferenceHydraRenderInterface,
-  type ReferenceHydraRenderInterface,
-} from "./referenceHydraInterface";
 
 interface FrameAnim {
   startPos: Vector3;
@@ -70,10 +66,6 @@ interface PickSelection {
 export type NavigationMode = "orbital" | "game";
 export type ViewUpAxis = "y" | "z";
 
-export type {
-  ReferenceHydraRPrim,
-  ReferenceHydraRenderInterface,
-} from "./referenceHydraInterface";
 
 const TEXT_DECODER = new TextDecoder();
 const IDENTITY_MATRIX = new Matrix4();
@@ -312,20 +304,6 @@ export class ThreeViewport {
 
   private isWebGpuRenderer(): boolean {
     return "isWebGPURenderer" in this.renderer;
-  }
-
-  createReferenceHydraRenderInterface(): ReferenceHydraRenderInterface {
-    return createReferenceHydraRenderInterface({
-      stageRoot: this.stageRoot,
-      meshByPath: this.meshByPath,
-      pathByMesh: this.pathByMesh,
-      resetStage: () => {
-        this.clearStage();
-        this.applyViewUpAxis();
-      },
-      setExpandedVertexNormals: (geometry, points, indices) =>
-        this.setExpandedVertexNormals(geometry, points, indices),
-    });
   }
 
   frameCurrentStage(): void {

@@ -1,5 +1,5 @@
-const _wasmBuildId = "wasm-e829b28d1f83"; // stamped by tools/native-build/stamp-build.mjs
-const _wrapperBuildId = "wasm-e829b28d1f83";
+const _wasmBuildId = "wasm-39907522d4d2"; // stamped by tools/native-build/stamp-build.mjs
+const _wrapperBuildId = "wasm-39907522d4d2";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
@@ -170,99 +170,6 @@ window.UsdWebViewBindings = {
       },
       extractMaterialPayloads(path) {
         return module.ExtractMaterialPayloads(normalizePath(path));
-      },
-      extractRenderables(path) {
-        return module.ExtractRenderables(normalizePath(path));
-      },
-      extractRenderablesWithMaterials(path) {
-        return module.ExtractRenderablesWithMaterials(normalizePath(path));
-      },
-      extractRenderablesWithMaterialsUnderRoot(path, primPath) {
-        if (!module.ExtractRenderablesWithMaterialsUnderRoot) {
-          return module.ExtractRenderablesWithMaterials(normalizePath(path));
-        }
-        return module.ExtractRenderablesWithMaterialsUnderRoot(normalizePath(path), primPath);
-      },
-      extractRenderablesAtTime(path, timeCode) {
-        return module.ExtractRenderablesAtTime(normalizePath(path), timeCode);
-      },
-      extractHydraRenderablesAtTime(path, timeCode) {
-        return module.ExtractHydraRenderablesAtTime(normalizePath(path), timeCode);
-      },
-      extractHydraRenderableSnapshotAtTime(path, timeCode) {
-        if (!module.ExtractHydraRenderableSnapshotAtTime) {
-          return null;
-        }
-        return module.ExtractHydraRenderableSnapshotAtTime(normalizePath(path), timeCode);
-      },
-      extractHydraRenderableSubtreeAtTime(path, primPath, timeCode) {
-        if (!module.ExtractHydraRenderableSubtreeAtTime) {
-          return null;
-        }
-        return module.ExtractHydraRenderableSubtreeAtTime(normalizePath(path), primPath, timeCode);
-      },
-      createHydraSyncDriver(path) {
-        if (!module.CreateHydraSyncDriver) {
-          return null;
-        }
-        const handle = module.CreateHydraSyncDriver(normalizePath(path));
-        if (!handle) {
-          return null;
-        }
-        return {
-          SetTime(timeCode) {
-            module.SetHydraSyncDriverTime(handle, timeCode);
-          },
-          Draw() {
-            return module.DrawHydraSyncDriver(handle);
-          },
-          GetStartTimeCode() {
-            return module.GetHydraSyncDriverStartTimeCode(handle);
-          },
-          GetEndTimeCode() {
-            return module.GetHydraSyncDriverEndTimeCode(handle);
-          },
-          GetTimeCodesPerSecond() {
-            return module.GetHydraSyncDriverTimeCodesPerSecond(handle);
-          },
-          delete() {
-            module.DeleteHydraSyncDriver(handle);
-          },
-        };
-      },
-      createReferenceHydraDriver(path, renderInterface) {
-        if (!module.CreateReferenceHydraDriver) {
-          console.warn("[USD WebView] CreateReferenceHydraDriver is not available");
-          return null;
-        }
-        const handle = module.CreateReferenceHydraDriver(
-          normalizePath(path),
-          renderInterface
-        );
-        if (!handle) {
-          console.warn("[USD WebView] reference hydra driver returned null handle");
-          return null;
-        }
-        return {
-          SetTime(timeCode) {
-            module.SetReferenceHydraDriverTime(handle, timeCode);
-          },
-          Draw() {
-            module.DrawReferenceHydraDriver(handle);
-          },
-          GetStartTimeCode() {
-            return module.GetReferenceHydraDriverStartTimeCode(handle);
-          },
-          GetEndTimeCode() {
-            return module.GetReferenceHydraDriverEndTimeCode(handle);
-          },
-          GetTimeCodesPerSecond() {
-            return module.GetReferenceHydraDriverTimeCodesPerSecond(handle);
-          },
-          delete() {
-            module.DeleteReferenceHydraDriver(handle);
-          },
-        };
       },
       extractGaussianSplats(path) {
         return module.ExtractGaussianSplats(normalizePath(path));
