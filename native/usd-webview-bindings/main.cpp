@@ -29,6 +29,9 @@
 #include "pxr/imaging/hd/material.h"
 #include "pxr/imaging/hd/mesh.h"
 #include "pxr/imaging/hd/meshUtil.h"
+#include "pxr/imaging/hd/smoothNormals.h"
+#include "pxr/imaging/pxOsd/tokens.h"
+#include "pxr/imaging/hd/vertexAdjacency.h"
 #include "pxr/imaging/hd/overlayContainerDataSource.h"
 #include "pxr/imaging/hd/renderDelegate.h"
 #include "pxr/imaging/hd/renderIndex.h"
@@ -5518,10 +5521,119 @@ CloseStage(const std::string& stagePath)
     g_stageRegistry.erase(stagePath);
 }
 
+// SPIKE (Phase 3 entry gates S1-S3) — removed when WebViewStageDriver lands.
+emscripten::val
+RunUnifiedDriverSpikes(const std::string& stagePath)
+{
+    emscripten::val result = emscripten::val::object();
+    UsdStageRefPtr inspectionStage = _GetOrOpenStage(stagePath);
+    if (!inspectionStage) {
+        result.set("error", std::string("no stage"));
+        return result;
+    }
+
+    // S2: an anonymous driver session layer sublayers the inspection stage's
+    // (anonymous) session layer and composes its opinions.
+    SdfLayerRefPtr driverSession = SdfLayer::CreateAnonymous(".usda");
+    driverSession->SetSubLayerPaths(
+        { inspectionStage->GetSessionLayer()->GetIdentifier() });
+    UsdStageRefPtr driverStage =
+        UsdStage::Open(inspectionStage->GetRootLayer(), driverSession);
+    result.set("s2_driverStageOpened", bool(driverStage));
+    if (!driverStage) {
+        return result;
+    }
+    driverStage->SetLoadRules(inspectionStage->GetLoadRules());
+
+    bool s2Composes = false;
+    {
+        UsdEditContext editContext(
+            inspectionStage, inspectionStage->GetSessionLayer());
+        UsdPrim inspectionRoot = inspectionStage->GetDefaultPrim();
+        if (inspectionRoot) {
+            static const TfToken kComment("comment");
+            inspectionRoot.SetMetadata(kComment, std::string("spike-s2-probe"));
+            UsdPrim driverRoot =
+                driverStage->GetPrimAtPath(inspectionRoot.GetPath());
+            std::string comment;
+            s2Composes = driverRoot &&
+                driverRoot.GetMetadata(kComment, &comment) &&
+                comment == "spike-s2-probe";
+            inspectionRoot.ClearMetadata(kComment);
+        }
+    }
+    result.set("s2_sessionOpinionComposes", s2Composes);
+
+    // S1: bake skinning with the edit target on the driver session; the
+    // shared root layer and the inspection session layer must stay clean.
+    driverStage->SetEditTarget(UsdEditTarget(driverSession));
+    const bool rootDirtyBefore = inspectionStage->GetRootLayer()->IsDirty();
+    const bool sessionDirtyBefore =
+        inspectionStage->GetSessionLayer()->IsDirty();
+    const bool bakeRan = UsdSkelBakeSkinning(driverStage->Traverse());
+    result.set("s1_bakeRan", bakeRan);
+    result.set(
+        "s1_rootLayerCleanAfterBake",
+        inspectionStage->GetRootLayer()->IsDirty() == rootDirtyBefore);
+    result.set(
+        "s1_inspectionSessionCleanAfterBake",
+        inspectionStage->GetSessionLayer()->IsDirty() == sessionDirtyBefore);
+    result.set("s1_driverSessionHasOpinions", !driverSession->IsEmpty());
+
+    // Baked skinning must yield time-varying points on the driver stage while
+    // the inspection stage's mesh stays at rest.
+    for (const UsdPrim& prim : driverStage->Traverse()) {
+        if (!prim.IsA<UsdGeomMesh>()) {
+            continue;
+        }
+        UsdGeomMesh mesh(prim);
+        VtArray<GfVec3f> pointsStart = _GetMeshPointsAsFloat(mesh, UsdTimeCode(1));
+        VtArray<GfVec3f> pointsMid = _GetMeshPointsAsFloat(mesh, UsdTimeCode(24));
+        bool moved = pointsStart.size() == pointsMid.size() && !pointsStart.empty();
+        double maxDelta = 0.0;
+        if (moved) {
+            for (size_t i = 0; i < pointsStart.size(); ++i) {
+                maxDelta = std::max(
+                    maxDelta,
+                    double((pointsStart[i] - pointsMid[i]).GetLength()));
+            }
+        }
+        result.set("s1_bakedPointsMaxDelta", maxDelta);
+
+        // S3: HdMeshUtil triangulation + Hd smooth normals from the linked
+        // static hd library.
+        VtIntArray faceVertexCounts;
+        VtIntArray faceVertexIndices;
+        mesh.GetFaceVertexCountsAttr().Get(&faceVertexCounts);
+        mesh.GetFaceVertexIndicesAttr().Get(&faceVertexIndices);
+        HdMeshTopology topology(
+            PxOsdOpenSubdivTokens->none,
+            HdTokens->rightHanded,
+            faceVertexCounts,
+            faceVertexIndices);
+        const std::vector<int> triangles =
+            _TriangulateHydraTopology(topology, prim.GetPath());
+        result.set("s3_triangleIndexCount", static_cast<int>(triangles.size()));
+
+        Hd_VertexAdjacency adjacency;
+        adjacency.BuildAdjacencyTable(&topology);
+        VtArray<GfVec3f> smoothNormals = Hd_SmoothNormals::ComputeSmoothNormals(
+            &adjacency,
+            static_cast<int>(pointsMid.size()),
+            pointsMid.cdata());
+        result.set(
+            "s3_smoothNormalCount", static_cast<int>(smoothNormals.size()));
+        break;
+    }
+
+    return result;
+}
+
 EMSCRIPTEN_BINDINGS(usdWebViewBindings)
 {
     emscripten::function("InitializeRuntime", &InitializeRuntime);
     emscripten::function("CloseStage", &CloseStage);
+    emscripten::function("RunUnifiedDriverSpikes", &RunUnifiedDriverSpikes);
     emscripten::function("CreateReferenceHydraDriver", &CreateReferenceHydraDriver);
     emscripten::function("DeleteReferenceHydraDriver", &DeleteReferenceHydraDriver);
     emscripten::function("SetReferenceHydraDriverTime", &SetReferenceHydraDriverTime);

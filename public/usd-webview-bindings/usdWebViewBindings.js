@@ -1,5 +1,5 @@
-const _wasmBuildId = "wasm-47daac91366c"; // stamped by tools/native-build/stamp-build.mjs
-const _wrapperBuildId = "wasm-47daac91366c";
+const _wasmBuildId = "wasm-8c1b359d9156"; // stamped by tools/native-build/stamp-build.mjs
+const _wrapperBuildId = "wasm-8c1b359d9156";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
@@ -44,6 +44,10 @@ window.UsdWebViewBindings = {
     });
 
     module.InitializeRuntime();
+
+    // Debug/automation hook: raw module access for console A/B comparisons
+    // and refactor spikes. Not part of the supported API surface.
+    window.__USD_WEBVIEW_MODULE__ = module;
 
     // Stores the original immutable bytes for each file, keyed by normalized path.
     const _originalLayerData = new Map();
