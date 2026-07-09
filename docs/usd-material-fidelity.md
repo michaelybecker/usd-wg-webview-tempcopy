@@ -41,6 +41,55 @@ an automation mode in the app, Playwright-driven viewport screenshots, and
 - Leave room to batch many materials into a shared USD stage later so repeated
   stage loads do not dominate runtime.
 
+## Current Branch State
+
+This branch currently implements a generic per-case packaging and capture path:
+
+- discover MaterialX cases
+- generate one self-contained USD package per case
+- load each package through the real viewer pipeline
+- capture PNGs
+- diff them against `threejs-new`
+
+That remains a valid general mechanism, but it is no longer the most likely
+long-term shape for the shaderball surface-material corpus.
+
+In `/home/mbecker/dev/mtlx/material-samples`, there is now a stronger candidate
+artifact for that job:
+
+- `usd/materialx_shaderball/`
+
+That package already provides:
+
+- one portable shaderball stage
+- an authored dome light / HDR setup
+- a root `suite` variant set
+- per-suite `material` variant sets
+- flat `family__material` material variants across showcase and library sets
+
+For shaderball surface materials, that is probably the better thing to drive in
+this viewer: load one stage and step variants, rather than generate and reload
+one stage per material.
+
+## Recommended Retarget
+
+Wait for the `material-samples` PR that introduces or stabilizes
+`usd/materialx_shaderball/` to land before re-targeting this harness.
+
+That is the cleaner sequence because:
+
+- the shared-stage artifact is still behind an active PR / branch
+- package structure and authored variant layout may still change
+- switching this harness early would likely cause avoidable churn
+
+Once that upstream artifact is stable, the likely next refactor here is:
+
+1. keep the existing automation/capture/diff infrastructure
+2. replace the shaderball surface-material primary path with shared-stage
+   variant driving
+3. keep the generic per-case packaging path as a fallback for non-shaderball or
+   non-surface cases
+
 ## Directory Layout
 
 The harness lives under [tools/usd-material-fidelity](/home/mbecker/dev/USD/usd-wg-webview/tools/usd-material-fidelity):

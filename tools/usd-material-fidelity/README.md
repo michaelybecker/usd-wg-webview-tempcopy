@@ -29,6 +29,70 @@ This harness now provides that capture path with:
 - Playwright-driven viewport capture
 - `pixelmatch` image diffs against `threejs-new`
 
+## Current Direction
+
+This branch currently implements the generic per-case path:
+
+- import MaterialX cases
+- package each one as its own self-contained USD stage
+- load each stage through the viewer
+- capture and diff the result
+
+That path works as a general bridge harness, but it is now likely a temporary
+architecture for the surface-material pass.
+
+There is a better shared-stage artifact in the sibling `material-samples`
+repository:
+
+- `/home/mbecker/dev/mtlx/material-samples/usd/materialx_shaderball/`
+
+That package already contains:
+
+- one portable USD stage
+- one shared shaderball geometry setup
+- one authored dome light / HDR environment
+- showcase and library suites
+- per-suite `material` variant sets with flat `family__material` variant names
+
+In other words, it already solves the "frontload all `.mtlx` into one stage"
+problem for the shaderball surface-material corpus.
+
+## Recommended Next Move
+
+Retarget this harness to the shared `materialx_shaderball` stage after the
+corresponding `material-samples` PR lands or otherwise stabilizes.
+
+Why wait:
+
+- right now that artifact still lives behind an open PR / branch
+- variant names, package layout, or authored stage details may still move
+- re-targeting this repo before that settles would likely create unnecessary
+  churn
+
+Once it is stable, the preferred evolution here is:
+
+1. keep the capture/diff automation already built in this repo
+2. stop treating one USD stage per material as the primary path for shaderball
+   surface cases
+3. enumerate `suite` + `material` variants from the shared shaderball stage
+4. load that stage once and step through variant switches for screenshots
+
+That should be both faster and more representative of the authored USD workflow
+than repeated per-case stage loads.
+
+## Scope Note
+
+The shared shaderball stage is the likely primary path for surface materials.
+It does not necessarily replace the generic per-case path for every future
+MaterialX test shape.
+
+The per-case path may still remain useful for:
+
+- non-shaderball cases
+- node/probe/UV diagnostics
+- custom carrier scenes
+- experiments that do not naturally fit the shared shaderball corpus
+
 ## Why A Small Subset First
 
 This harness is designed to scale to the full `material-fidelity` corpus, but
