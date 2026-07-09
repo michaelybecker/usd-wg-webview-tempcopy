@@ -1,4 +1,3 @@
-import type { RenderableMesh } from "../usd/types";
 import { runtime, state } from "./appState";
 import { attrList, attrPrimPath } from "./dom";
 import { waitForUiPaint } from "./automation";
@@ -7,57 +6,25 @@ import { renderSceneGraph } from "./sceneGraphPanel";
 import { setStatus } from "./statusBar";
 import { collectRendererStats, renderStageSummary } from "./summaries";
 
-export async function applyVariantChange(
-  primPath?: string,
-  variantSetName?: string,
-  loadingMessage = "loading variant..."
+// Uniform stage-edit refresh: every composition-changing edit (variant
+// selection, payload load/unload) funnels through the unified stage driver.
+// NotifyStageEdited recomposes the private driver stage (re-mirrors load
+// rules, re-infers skel bindings, re-bakes), so geometry and materials
+// arrive coherently in one full redraw — no per-edit-kind forking.
+export async function applyStageEdit(
+  _primPath?: string,
+  loadingMessage = "applying stage edit..."
 ): Promise<void> {
   const serial = ++state.variantChangeSerial;
-  const normalizedVariantSet = variantSetName?.toLowerCase() ?? "";
-  const isMaterialVariant =
-    normalizedVariantSet.includes("shading") ||
-    normalizedVariantSet.includes("material");
-  const isAnimationVariant = normalizedVariantSet.includes("animation");
-  const isModelingVariant = normalizedVariantSet.includes("modeling");
 
   setStatus(loadingMessage, true);
   await waitForUiPaint();
 
-  let refreshedRenderables: RenderableMesh[] = [];
-
-  if (!isMaterialVariant) {
-    const subtreeRenderables = primPath && !isAnimationVariant
-      ? runtime.extractHydraRenderableSubtreeAtTime(primPath, state.animCurrent)
-      : null;
-    if (primPath && !isAnimationVariant && subtreeRenderables && subtreeRenderables.length > 0) {
-      refreshedRenderables = subtreeRenderables;
-      state.viewport.updateRenderablesUnderRoot(
-        primPath,
-        subtreeRenderables,
-        isModelingVariant
-      );
-    } else {
-      let renderables = runtime.extractHydraRenderableSnapshotAtTime(state.animCurrent);
-      if (!renderables || renderables.length === 0) {
-        renderables = runtime.extractRenderables();
-      }
-      refreshedRenderables = renderables;
-      if (isAnimationVariant) {
-        state.viewport.renderStage(renderables, state.currentStageSummary, false);
-      } else {
-        state.viewport.updateRenderables(renderables, isModelingVariant);
-      }
-    }
-    state.viewport.renderGaussianSplats(runtime.extractGaussianSplats());
-  }
-
-  if (isMaterialVariant || refreshedRenderables.length === 0) {
-    refreshedRenderables = primPath
-      ? runtime.extractRenderablesWithMaterialsUnderRoot(primPath)
-      : runtime.extractRenderablesWithMaterials();
-  }
-  if (refreshedRenderables.length > 0) {
-    await state.viewport.updateRenderablesAsync(refreshedRenderables);
+  const renderables = runtime.refreshAfterStageEdit(state.animCurrent);
+  state.viewport.updateRenderables(renderables, true);
+  state.viewport.renderGaussianSplats(runtime.extractGaussianSplats());
+  if (renderables.length > 0) {
+    await state.viewport.updateRenderablesAsync(renderables);
   }
 
   if (serial !== state.variantChangeSerial) {
@@ -67,9 +34,7 @@ export async function applyVariantChange(
   const newPrims = runtime.getSceneGraph();
   renderSceneGraph(newPrims);
   state.currentRendererStats = collectRendererStats(
-    refreshedRenderables.length > 0
-      ? refreshedRenderables
-      : runtime.extractHydraRenderableSnapshotAtTime(state.animCurrent) ?? runtime.extractRenderables(),
+    renderables,
     runtime.extractGaussianSplats()
   );
   renderStageSummary(state.currentStageSummary);

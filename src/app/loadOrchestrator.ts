@@ -45,11 +45,9 @@ export async function loadFiles(files: File[]): Promise<void> {
 
   let result: StageLoadResult;
   try {
-    const referenceHydraRenderInterface = state.viewport.createReferenceHydraRenderInterface();
     result = await runtime.loadStage({
       files,
       rootFile,
-      referenceHydraRenderInterface,
       loadAllPayloads: state.loadAllPayloadsOnStageOpen,
     });
   } catch (error) {
@@ -73,19 +71,8 @@ export async function loadFiles(files: File[]): Promise<void> {
   applyUpAxisOptions();
   renderRuntimeStatus(runtime.status);
   const gaussianSplats = result.gaussianSplats ?? [];
-  let rendererStatsRenderables = result.renderables ?? [];
-  if (!result.usedReferenceHydraDriver && rendererStatsRenderables.length > 0) {
-    setStatus("loading materials...", true);
-    await waitForUiPaint();
-    if (loadSerial !== state.stageLoadSerial) {
-      return;
-    }
-    const materializedRenderables = runtime.extractRenderablesWithMaterials();
-    if (materializedRenderables.length > 0) {
-      rendererStatsRenderables = materializedRenderables;
-    }
-  }
-  await state.viewport.prepareForRenderables(rendererStatsRenderables);
+  const renderables = result.renderables ?? [];
+  await state.viewport.prepareForRenderables(renderables);
   if (loadSerial !== state.stageLoadSerial) {
     return;
   }
@@ -108,13 +95,9 @@ export async function loadFiles(files: File[]): Promise<void> {
     }
     applyLightingOptions();
   }
-  if (result.usedReferenceHydraDriver) {
-    state.viewport.frameCurrentStage();
-  } else {
-    state.viewport.renderStage(rendererStatsRenderables, result.summary, gaussianSplats.length > 0);
-  }
+  state.viewport.renderStage(renderables, result.summary, gaussianSplats.length > 0);
   state.viewport.renderGaussianSplats(gaussianSplats);
-  state.currentRendererStats = collectRendererStats(rendererStatsRenderables, gaussianSplats);
+  state.currentRendererStats = collectRendererStats(renderables, gaussianSplats);
   renderStageSummary(state.currentStageSummary);
   renderSceneGraph(runtime.getSceneGraph());
   viewportElement.classList.add("has-stage");
@@ -142,36 +125,27 @@ export async function loadFiles(files: File[]): Promise<void> {
   if (loadSerial !== state.stageLoadSerial) {
     return;
   }
-  if (result.usedReferenceHydraDriver || rendererStatsRenderables.length > 0) {
-    if (result.usedReferenceHydraDriver) {
-      setStatus("loading materials...", true);
-      await waitForUiPaint();
-      if (loadSerial !== state.stageLoadSerial) {
-        return;
-      }
+  if (renderables.length > 0) {
+    setStatus("decoding textures...", true);
+    await waitForUiPaint();
+    if (loadSerial !== state.stageLoadSerial) {
+      return;
     }
-    const materializedRenderables = result.usedReferenceHydraDriver
-      ? runtime.extractRenderablesWithMaterials()
-      : rendererStatsRenderables;
-    if (materializedRenderables.length > 0) {
-      setStatus("decoding textures...", true);
-      await waitForUiPaint();
-      if (loadSerial !== state.stageLoadSerial) {
-        return;
-      }
-      await state.viewport.updateRenderablesAsync(materializedRenderables);
-      if (loadSerial !== state.stageLoadSerial) {
-        return;
-      }
-      rendererStatsRenderables = materializedRenderables;
-      state.currentRendererStats = collectRendererStats(rendererStatsRenderables, gaussianSplats);
-      renderStageSummary(state.currentStageSummary);
+    await state.viewport.updateRenderablesAsync(renderables);
+    if (loadSerial !== state.stageLoadSerial) {
+      return;
     }
+    state.currentRendererStats = collectRendererStats(renderables, gaussianSplats);
+    renderStageSummary(state.currentStageSummary);
   }
   if (loadSerial === state.stageLoadSerial) {
     state.isLoadingStage = false;
     const stageFailed = !!result.summary?.error;
-    setStatus(stageFailed ? "Stage load failed" : "Ready", false);
+    const inferredCount = result.diagnostics?.inferredBindingCount ?? 0;
+    const readyMessage = inferredCount > 0
+      ? `Ready — skeleton bindings were inferred (${inferredCount})`
+      : "Ready";
+    setStatus(stageFailed ? "Stage load failed" : readyMessage, false);
     if (automationEnabled) {
       setAutomationState(
         stageFailed ? "error" : "ready",

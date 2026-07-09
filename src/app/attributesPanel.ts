@@ -1,7 +1,7 @@
 import type { PrimAttribute } from "../usd/types";
 import { runtime } from "./appState";
 import { attrList, attrPrimPath, escHtml } from "./dom";
-import { applyVariantChange } from "./stageEdits";
+import { applyStageEdit } from "./stageEdits";
 
 export function renderAttributes(primPath: string, attrs: PrimAttribute[]): void {
   attrPrimPath.textContent = primPath;
@@ -57,11 +57,7 @@ attrList.addEventListener("change", (e) => {
     renderAttributes(select.dataset.primpath!, runtime.getPrimAttributes(select.dataset.primpath!));
     return;
   }
-  const normalizedVariantSet = select.dataset.variantset?.toLowerCase() ?? "";
-  if (!normalizedVariantSet.includes("shading") && !normalizedVariantSet.includes("material")) {
-    runtime.resetHydraDrivers();
-  }
-  void applyVariantChange(select.dataset.primpath, select.dataset.variantset);
+  void applyStageEdit(select.dataset.primpath, "loading variant...");
 });
 
 attrList.addEventListener("click", (e) => {

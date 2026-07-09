@@ -1,10 +1,9 @@
 import type {
   UsdWebViewBindings,
-  HydraSyncDriver,
-  ReferenceHydraDriver,
+  MeshUpdate,
   PrimAttribute,
-  PrimTransform,
   RenderableGaussianSplat,
+  RenderableMaterial,
   RenderableMesh,
   RenderableTexture,
   RuntimeStatus,
@@ -13,7 +12,6 @@ import type {
   StageLoadResult,
   StageSummary,
 } from "./types";
-
 import { WASM_BUILD_NAME } from "./generated/buildId";
 
 const RUNTIME_ENTRYPOINT = `/usd-webview-bindings/usdWebViewBindings.js?v=${WASM_BUILD_NAME}`;
@@ -21,10 +19,9 @@ const RUNTIME_ASSET_ROOT = "/usd-webview-bindings/";
 
 export class UsdWebViewRuntime {
   private bindings: UsdWebViewBindings | null = null;
-  private hydraSyncDriver: HydraSyncDriver | null = null;
-  private referenceHydraDriver: ReferenceHydraDriver | null = null;
   private materialXResources: RenderableTexture[] = [];
-  private useHydraSyncDriver = true;
+  private materialPayloadByPath = new Map<string, RenderableMaterial>();
+  private hasStageDriver = false;
   currentStagePath: string | null = null;
 
   status: RuntimeStatus = {
@@ -90,17 +87,15 @@ export class UsdWebViewRuntime {
       };
     }
 
-    this.referenceHydraDriver?.delete?.();
-    this.referenceHydraDriver = null;
-    this.hydraSyncDriver?.delete?.();
-    this.hydraSyncDriver = null;
-
     // Release the previous stage's native caches and MEMFS files before
     // writing the new stage's files.
     if (this.currentStagePath) {
+      this.bindings.deleteStageDriver?.(this.currentStagePath);
       this.bindings.closeStage?.(this.currentStagePath);
       this.currentStagePath = null;
     }
+    this.hasStageDriver = false;
+    this.materialPayloadByPath.clear();
 
     const materialXResources: RenderableTexture[] = [];
     for (const file of request.files) {
@@ -125,120 +120,113 @@ export class UsdWebViewRuntime {
       return { summary: normalizedSummary, renderables: [] };
     }
 
-    const gaussianSplats = this.bindings.extractGaussianSplats?.(rootPath) ?? [];
     this.currentStagePath = rootPath;
-    const startTime = normalizedSummary.startTimeCode ?? 0;
-    const endTime = normalizedSummary.endTimeCode ?? startTime;
-    const hasAnimationRange = Number.isFinite(startTime) && endTime > startTime;
+    const gaussianSplats = this.bindings.extractGaussianSplats?.(rootPath) ?? [];
 
-    if (
-      hasAnimationRange &&
-      request.referenceHydraRenderInterface &&
-      this.bindings.createReferenceHydraDriver
-    ) {
-      this.referenceHydraDriver = this.bindings.createReferenceHydraDriver(
-        rootPath,
-        request.referenceHydraRenderInterface
-      );
-      if (this.referenceHydraDriver) {
-        this.referenceHydraDriver.SetTime(startTime);
-        this.referenceHydraDriver.Draw();
-        return {
-          summary: normalizedSummary,
-          renderables: [],
-          gaussianSplats,
-          usedReferenceHydraDriver: true,
-        };
-      }
-      console.warn("[USD WebView] reference hydra load path unavailable; falling back");
+    this.hasStageDriver = this.bindings.createStageDriver?.(rootPath) ?? false;
+    let renderables: RenderableMesh[] = [];
+    let diagnostics: StageLoadResult["diagnostics"];
+    if (this.hasStageDriver) {
+      this.refreshMaterialPayloads();
+      const timing = this.bindings.stageDriverGetTiming?.(rootPath);
+      renderables = this.drawAtTime(timing?.start ?? 0, true);
+      diagnostics = this.bindings.stageDriverGetDiagnostics?.(rootPath);
     }
 
-    this.hydraSyncDriver = this.bindings.createHydraSyncDriver?.(rootPath) ?? null;
-    const hydraRenderables = this.extractHydraRenderablesAtTime(startTime);
-
-    // Use Hydra for initial geometry — same path as animation frames, avoids
-    // the legacy extractor which produces wrong topology for complex assets.
-    // Fall back to legacy only if Hydra gives nothing (e.g. no Hydra support).
-    let renderables = hydraRenderables;
-    if (renderables.length === 0) {
-      renderables = this.withMaterialXResources(this.bindings.extractRenderables?.(rootPath) ?? []);
-    }
-
-    return { summary: normalizedSummary, renderables, gaussianSplats };
+    return { summary: normalizedSummary, renderables, gaussianSplats, diagnostics };
   }
 
-  extractTransformsAtTime(timeCode: number): PrimTransform[] {
-    if (!this.bindings?.extractTransformsAtTime || !this.currentStagePath) {
+  // Draw the stage through the unified driver and resolve material payloads
+  // onto the returned renderables. full=false returns only the time-varying
+  // set (partial update).
+  drawAtTime(timeCode: number, full: boolean): RenderableMesh[] {
+    if (!this.bindings?.stageDriverDraw || !this.currentStagePath || !this.hasStageDriver) {
       return [];
     }
-    return this.bindings.extractTransformsAtTime(this.currentStagePath, timeCode);
+    this.bindings.stageDriverSetTime?.(this.currentStagePath, timeCode);
+    const drawResult = this.bindings.stageDriverDraw(this.currentStagePath, full);
+    const meshes = drawResult?.meshes ?? [];
+    return this.withMaterialXResources(
+      meshes.map((update) => this.meshUpdateToRenderable(update))
+    );
   }
 
-  extractRenderablesAtTime(timeCode: number): RenderableMesh[] {
-    if (!this.bindings?.extractRenderablesAtTime || !this.currentStagePath) {
+  // Uniform stage-edit refresh: recompose the driver stage (re-mirror load
+  // rules, re-infer bindings, re-bake) and return a coherent full redraw.
+  refreshAfterStageEdit(timeCode: number): RenderableMesh[] {
+    if (!this.bindings || !this.currentStagePath || !this.hasStageDriver) {
       return [];
     }
-    return this.withMaterialXResources(this.bindings.extractRenderablesAtTime(this.currentStagePath, timeCode));
-  }
-
-  extractHydraRenderablesAtTime(timeCode: number): RenderableMesh[] {
-    if (this.referenceHydraDriver) {
-      this.referenceHydraDriver.SetTime(timeCode);
-      this.referenceHydraDriver.Draw();
-      return [];
-    }
-    if (this.useHydraSyncDriver && this.hydraSyncDriver) {
-      this.hydraSyncDriver.SetTime(timeCode);
-      return this.withMaterialXResources(this.hydraSyncDriver.Draw());
-    }
-    if (!this.bindings?.extractHydraRenderablesAtTime || !this.currentStagePath) {
-      return [];
-    }
-    return this.withMaterialXResources(this.bindings.extractHydraRenderablesAtTime(this.currentStagePath, timeCode));
-  }
-
-  extractHydraRenderableSnapshotAtTime(timeCode: number): RenderableMesh[] | null {
-    if (!this.bindings?.extractHydraRenderableSnapshotAtTime || !this.currentStagePath) {
-      return null;
-    }
-    const renderables = this.bindings.extractHydraRenderableSnapshotAtTime(this.currentStagePath, timeCode);
-    return renderables ? this.withMaterialXResources(renderables) : null;
-  }
-
-  extractHydraRenderableSubtreeAtTime(primPath: string, timeCode: number): RenderableMesh[] | null {
-    if (!this.bindings?.extractHydraRenderableSubtreeAtTime || !this.currentStagePath) {
-      return null;
-    }
-    const renderables = this.bindings.extractHydraRenderableSubtreeAtTime(this.currentStagePath, primPath, timeCode);
-    return renderables ? this.withMaterialXResources(renderables) : null;
+    this.bindings.stageDriverNotifyStageEdited?.(this.currentStagePath);
+    this.refreshMaterialPayloads();
+    return this.drawAtTime(timeCode, true);
   }
 
   getStageTiming(): { start: number; end: number; fps: number } | null {
-    if (this.referenceHydraDriver) {
-      const start = this.referenceHydraDriver.GetStartTimeCode?.() ?? 0;
-      const end = this.referenceHydraDriver.GetEndTimeCode?.() ?? 0;
-      const fps = this.referenceHydraDriver.GetTimeCodesPerSecond?.() ?? 24;
-      return { start, end, fps };
+    if (!this.bindings?.stageDriverGetTiming || !this.currentStagePath || !this.hasStageDriver) {
+      return null;
     }
-    if (!this.hydraSyncDriver) return null;
-    const start = this.hydraSyncDriver.GetStartTimeCode?.() ?? 0;
-    const end = this.hydraSyncDriver.GetEndTimeCode?.() ?? 0;
-    const fps = this.hydraSyncDriver.GetTimeCodesPerSecond?.() ?? 24;
-    return { start, end, fps };
+    const timing = this.bindings.stageDriverGetTiming(this.currentStagePath);
+    if (timing?.start === undefined) {
+      return null;
+    }
+    return { start: timing.start ?? 0, end: timing.end ?? 0, fps: timing.fps ?? 24 };
   }
 
-  setHydraSyncDriverEnabled(enabled: boolean): void {
-    this.useHydraSyncDriver = enabled;
+  private refreshMaterialPayloads(): void {
+    this.materialPayloadByPath.clear();
+    if (!this.bindings?.extractMaterialPayloads || !this.currentStagePath) {
+      return;
+    }
+    for (const entry of this.bindings.extractMaterialPayloads(this.currentStagePath)) {
+      if (entry?.path && entry.material) {
+        this.materialPayloadByPath.set(entry.path, entry.material);
+      }
+    }
   }
 
-  resetHydraDrivers(): void {
-    this.referenceHydraDriver?.delete?.();
-    this.referenceHydraDriver = null;
-    this.hydraSyncDriver?.delete?.();
-    this.hydraSyncDriver = null;
-    if (this.currentStagePath) {
-      this.hydraSyncDriver = this.bindings?.createHydraSyncDriver?.(this.currentStagePath) ?? null;
+  private meshUpdateToRenderable(update: MeshUpdate): RenderableMesh {
+    // Point-instancer entries reuse the legacy points+indices shape (with
+    // materials already extracted natively); pass them through.
+    if (!update.positions) {
+      return update as RenderableMesh;
     }
+
+    // Corner-expanded entry: identity indices route it through the existing
+    // face-expansion pipeline untouched (expansion becomes a copy), while the
+    // provided corner-stream normals are honored directly.
+    const positions = new Float32Array(update.positions);
+    const vertexCount = positions.length / 3;
+    const indices = new Uint32Array(vertexCount);
+    for (let index = 0; index < vertexCount; index += 1) {
+      indices[index] = index;
+    }
+
+    const material = update.materialPath
+      ? this.materialPayloadByPath.get(update.materialPath)
+      : undefined;
+    const materialSubsets = update.subsets?.map((subset) => ({
+      path: subset.path,
+      name: subset.name,
+      start: subset.start,
+      count: subset.count,
+      material: subset.materialPath
+        ? this.materialPayloadByPath.get(subset.materialPath)
+        : material,
+    }));
+
+    return {
+      path: update.path,
+      name: update.name,
+      points: positions,
+      indices,
+      normals: update.normals ? new Float32Array(update.normals) : undefined,
+      uvs: update.uvs ? new Float32Array(update.uvs) : undefined,
+      matrix: update.matrix,
+      color: update.displayColor,
+      material,
+      materialSubsets,
+    };
   }
 
   getSceneGraph(): SceneGraphPrim[] {
@@ -263,25 +251,6 @@ export class UsdWebViewRuntime {
       return "";
     }
     return this.bindings.getLastSkelBindingOverlayContents(this.currentStagePath);
-  }
-
-  extractRenderables(): RenderableMesh[] {
-    if (!this.bindings?.extractRenderables || !this.currentStagePath) return [];
-    return this.withMaterialXResources(this.bindings.extractRenderables(this.currentStagePath));
-  }
-
-  extractRenderablesWithMaterials(): RenderableMesh[] {
-    if (!this.bindings?.extractRenderablesWithMaterials || !this.currentStagePath) return [];
-    return this.withMaterialXResources(this.bindings.extractRenderablesWithMaterials(this.currentStagePath));
-  }
-
-  extractRenderablesWithMaterialsUnderRoot(primPath: string): RenderableMesh[] {
-    if (!this.bindings?.extractRenderablesWithMaterialsUnderRoot || !this.currentStagePath) {
-      return this.extractRenderablesWithMaterials();
-    }
-    return this.withMaterialXResources(
-      this.bindings.extractRenderablesWithMaterialsUnderRoot(this.currentStagePath, primPath)
-    );
   }
 
   extractGaussianSplats(): RenderableGaussianSplat[] {

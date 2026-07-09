@@ -1,5 +1,5 @@
-const _wasmBuildId = "wasm-0d70519ddba6"; // stamped by tools/native-build/stamp-build.mjs
-const _wrapperBuildId = "wasm-0d70519ddba6";
+const _wasmBuildId = "wasm-e829b28d1f83"; // stamped by tools/native-build/stamp-build.mjs
+const _wrapperBuildId = "wasm-e829b28d1f83";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
@@ -136,6 +136,40 @@ window.UsdWebViewBindings = {
           }
         }
         _originalLayerData.clear();
+      },
+      createStageDriver(path) {
+        return module.CreateStageDriver
+          ? module.CreateStageDriver(normalizePath(path))
+          : false;
+      },
+      deleteStageDriver(path) {
+        if (module.DeleteStageDriver) {
+          module.DeleteStageDriver(normalizePath(path));
+        }
+      },
+      stageDriverSetTime(path, timeCode) {
+        module.StageDriverSetTime(normalizePath(path), timeCode);
+      },
+      stageDriverDraw(path, full) {
+        return module.StageDriverDraw(normalizePath(path), full);
+      },
+      stageDriverDrawSubtree(path, primPath) {
+        return module.StageDriverDrawSubtree(normalizePath(path), primPath);
+      },
+      stageDriverGetTiming(path) {
+        return module.StageDriverGetTiming(normalizePath(path));
+      },
+      stageDriverGetCapabilities(path) {
+        return module.StageDriverGetCapabilities(normalizePath(path));
+      },
+      stageDriverGetDiagnostics(path) {
+        return module.StageDriverGetDiagnostics(normalizePath(path));
+      },
+      stageDriverNotifyStageEdited(path) {
+        module.StageDriverNotifyStageEdited(normalizePath(path));
+      },
+      extractMaterialPayloads(path) {
+        return module.ExtractMaterialPayloads(normalizePath(path));
       },
       extractRenderables(path) {
         return module.ExtractRenderables(normalizePath(path));

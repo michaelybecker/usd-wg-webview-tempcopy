@@ -442,6 +442,13 @@ export class ThreeViewport {
     this.updateRenderablesInScope(renderables, undefined, forceGeometryUpdate);
   }
 
+  // Partial update from the unified driver: only the supplied meshes are
+  // touched; nothing outside the update set is removed.
+  updateRenderablesPartial(renderables: RenderableMesh[]): void {
+    const paths = new Set(renderables.map((renderable) => renderable.path));
+    this.updateRenderablesInScope(renderables, (path) => paths.has(path), true);
+  }
+
   updateRenderablesUnderRoot(
     rootPath: string,
     renderables: RenderableMesh[],
@@ -813,7 +820,7 @@ export class ThreeViewport {
       // Same vertex count — update in place, keep UVs untouched
       (posAttr.array as Float32Array).set(pos);
       posAttr.needsUpdate = true;
-      this.setExpandedVertexNormals(geo, renderable.points, renderable.indices);
+      this.setExpandedVertexNormals(geo, renderable.points, renderable.indices, renderable.normals);
       this.setExpandedVertexTangents(geo, renderable);
     } else {
       // Topology changed — full rebuild, but salvage UVs from the old geometry
@@ -850,7 +857,7 @@ export class ThreeViewport {
     if (renderable.materialSubsets?.length) {
       this.applyGeometryGroups(geo, renderable);
     }
-    this.setExpandedVertexNormals(geo, points, indices);
+    this.setExpandedVertexNormals(geo, points, indices, renderable.normals);
     this.setExpandedVertexTangents(geo, renderable);
     geo.computeBoundingBox();
     geo.computeBoundingSphere();
@@ -874,8 +881,17 @@ export class ThreeViewport {
   private setExpandedVertexNormals(
     geo: BufferGeometry,
     points: ArrayLike<number>,
-    indices: ArrayLike<number>
+    indices: ArrayLike<number>,
+    providedNormals?: Float32Array
   ): void {
+    // The unified stage driver supplies corner-stream normals (authored
+    // normals honored, native smooth-normal fallback); use them directly
+    // when they match the expanded vertex count instead of re-welding.
+    if (providedNormals && providedNormals.length === indices.length * 3) {
+      geo.setAttribute("normal", new Float32BufferAttribute(providedNormals, 3));
+      geo.attributes.normal.needsUpdate = true;
+      return;
+    }
     const normals = buildIndexedVertexNormals(points, indices);
     geo.setAttribute("normal", new Float32BufferAttribute(faceExpandAttr(normals, indices, 3), 3));
     geo.attributes.normal.needsUpdate = true;

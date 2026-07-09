@@ -42,7 +42,7 @@ import { waitForUiPaint } from "./automation";
 import { onTick } from "./animation";
 import { setStatus } from "./statusBar";
 import { getEffectiveUpAxis, renderStageSummary } from "./summaries";
-import { applyVariantChange } from "./stageEdits";
+import { applyStageEdit } from "./stageEdits";
 
 const menuItems = Array.from(app.querySelectorAll<HTMLElement>(".menu-item"));
 let activeMenu: HTMLElement | null = null;
@@ -129,7 +129,7 @@ export async function applyMaterialXOptions(): Promise<void> {
     return;
   }
 
-  const materializedRenderables = runtime.extractRenderablesWithMaterials();
+  const materializedRenderables = runtime.drawAtTime(state.animCurrent, true);
   if (materializedRenderables.length === 0) {
     return;
   }
@@ -366,12 +366,12 @@ applyPayloadOpenOptions();
 
 app.querySelector("#menuLoadAllPayloads")?.addEventListener("click", () => {
   runtime.setAllPayloadsLoaded(true);
-  void applyVariantChange(undefined, undefined, "loading payloads...");
+  void applyStageEdit(undefined, "loading payloads...");
 });
 
 app.querySelector("#menuUnloadAllPayloads")?.addEventListener("click", () => {
   runtime.setAllPayloadsLoaded(false);
-  void applyVariantChange(undefined, undefined, "unloading payloads...");
+  void applyStageEdit(undefined, "unloading payloads...");
 });
 
 statsClose.addEventListener("click", () => {

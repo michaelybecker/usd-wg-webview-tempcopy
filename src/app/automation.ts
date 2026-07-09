@@ -1,7 +1,7 @@
 import { runtime, state } from "./appState";
 import { sampleAnimationFrame, updatePlaybarScrubber } from "./animation";
 import { loadAutomationManifestStage } from "./loadOrchestrator";
-import { applyVariantChange } from "./stageEdits";
+import { applyStageEdit } from "./stageEdits";
 
 export type AutomationManifest = {
   caseId?: string;
@@ -145,19 +145,14 @@ window.__USD_WEBVIEW_AUTOMATION__ = {
     if (!changed) {
       return false;
     }
-    const normalizedVariantSet = variantSetName.toLowerCase();
-    if (!normalizedVariantSet.includes("shading") && !normalizedVariantSet.includes("material")) {
-      runtime.resetHydraDrivers();
-    }
-    await applyVariantChange(primPath, variantSetName);
+    await applyStageEdit(primPath, "loading variant...");
     await waitForSettledFrames();
     return true;
   },
   async setPayloadLoaded(primPath: string, loaded: boolean): Promise<boolean> {
     const changed = runtime.setPayloadLoaded(primPath, loaded);
-    await applyVariantChange(
+    await applyStageEdit(
       primPath,
-      undefined,
       loaded ? "loading payload..." : "unloading payload..."
     );
     await waitForSettledFrames();

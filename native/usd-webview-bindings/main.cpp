@@ -4191,6 +4191,7 @@ private:
     void _ComputeCapabilities(bool hasSkelContent)
     {
         _capabilities = StageDriverCapabilities();
+        _timeVaryingPrimPaths.clear();
         _capabilities.hasSkelContent = hasSkelContent;
         _capabilities.skelBindingsInferred = _inferredBindingCount > 0;
         _capabilities.hasAnimationRange =
@@ -4206,20 +4207,38 @@ private:
             }
             if (prim.IsA<UsdGeomMesh>()) {
                 UsdGeomMesh mesh(prim);
+                bool primTimeVarying = false;
                 UsdAttribute pointsAttr = mesh.GetPointsAttr();
                 if (pointsAttr && pointsAttr.GetNumTimeSamples() > 1) {
                     _capabilities.hasTimeVaryingPoints = true;
+                    primTimeVarying = true;
                 }
-                UsdGeomXformable xformable(prim);
-                if (xformable) {
+                // A mesh moves when any ancestor xform varies, so probe the
+                // whole path, not just the prim's own ops.
+                for (UsdPrim ancestor = prim;
+                     ancestor && !ancestor.IsPseudoRoot();
+                     ancestor = ancestor.GetParent()) {
+                    UsdGeomXformable xformable(ancestor);
+                    if (!xformable) {
+                        continue;
+                    }
                     bool resetsStack = false;
+                    bool varies = false;
                     for (const UsdGeomXformOp& op :
                          xformable.GetOrderedXformOps(&resetsStack)) {
                         if (op.GetNumTimeSamples() > 1) {
-                            _capabilities.hasTimeVaryingXforms = true;
+                            varies = true;
                             break;
                         }
                     }
+                    if (varies) {
+                        _capabilities.hasTimeVaryingXforms = true;
+                        primTimeVarying = true;
+                        break;
+                    }
+                }
+                if (primTimeVarying) {
+                    _timeVaryingPrimPaths.insert(prim.GetPath().GetString());
                 }
             }
             if (prim.IsA<UsdShadeShader>()) {
@@ -4403,13 +4422,12 @@ private:
                 continue;
             }
 
-            UsdGeomMesh mesh(prim);
-            UsdAttribute pointsAttr = mesh.GetPointsAttr();
-            const bool pointsVary =
-                pointsAttr && pointsAttr.GetNumTimeSamples() > 1;
-            if (!full && !pointsVary) {
+            if (!full &&
+                _timeVaryingPrimPaths.find(prim.GetPath().GetString()) ==
+                    _timeVaryingPrimPaths.end()) {
                 continue;
             }
+            UsdGeomMesh mesh(prim);
 
             emscripten::val entry =
                 _BuildMeshEntry(mesh, timeCode, xformCache,
@@ -4432,7 +4450,7 @@ private:
                 _driverStage,
                 packageRootPath,
                 timeCode,
-                /* includeMaterials = */ false,
+                /* includeMaterials = */ true,
                 rootPath,
                 instancerPrototypeRoots,
                 /* skelCache = */ nullptr,
@@ -4731,6 +4749,7 @@ private:
     bool _inspectionSessionCleanAfterBake = true;
     std::unordered_map<std::string, TriangulatedTopology> _topologyByPath;
     std::deque<std::vector<float>> _drawBuffers;
+    std::set<std::string> _timeVaryingPrimPaths;
 };
 
 std::unordered_map<std::string, std::unique_ptr<WebViewStageDriver>>

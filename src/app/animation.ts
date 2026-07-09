@@ -50,9 +50,10 @@ export function sampleAnimationFrame(timeCode: number): void {
   if (state.isLoadingStage) {
     return;
   }
-  const renderables = runtime.extractHydraRenderablesAtTime(timeCode);
+  // Partial draw: the driver returns only the time-varying mesh set.
+  const renderables = runtime.drawAtTime(timeCode, false);
   if (renderables.length > 0) {
-    state.viewport.updateRenderables(renderables);
+    state.viewport.updateRenderablesPartial(renderables);
   }
 }
 

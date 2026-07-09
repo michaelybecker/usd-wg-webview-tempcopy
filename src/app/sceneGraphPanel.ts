@@ -2,7 +2,7 @@ import type { SceneGraphPrim } from "../usd/types";
 import { runtime, state } from "./appState";
 import { attrList, attrPrimPath, escHtml, sceneGraphList } from "./dom";
 import { renderAttributes } from "./attributesPanel";
-import { applyVariantChange } from "./stageEdits";
+import { applyStageEdit } from "./stageEdits";
 
 function isAncestorCollapsed(path: string): boolean {
   const parts = path.split("/").filter(Boolean);
@@ -108,9 +108,8 @@ sceneGraphList.addEventListener("click", (e) => {
     const path = payloadBtn.dataset.payloadPath;
     const currentlyLoaded = payloadBtn.dataset.payloadLoaded === "1";
     runtime.setPayloadLoaded(path, !currentlyLoaded);
-    void applyVariantChange(
+    void applyStageEdit(
       path,
-      undefined,
       currentlyLoaded ? "unloading payload..." : "loading payload..."
     );
     return;
