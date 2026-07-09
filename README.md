@@ -1,40 +1,95 @@
 # USD Web View
 
-USD Web View is a browser-based OpenUSD inspection and rendering environment. It parses USD files entirely in-browser using a WASM build of OpenUSD, renders meshes in Three.js, and plays back animation — no server required.
+USD Web View is a browser-based OpenUSD inspection and rendering environment.
+It parses USD files entirely in-browser using a WASM build of OpenUSD, renders
+meshes and Gaussian splats in Three.js, and plays back animation. No server is
+required.
 
 ## Features
 
-- **File formats** — USD, USDA, USDC, USDZ (including multi-file folder drops)
-- **Material extraction** — UsdPreviewSurface PBR scalars and all texture slots (diffuse, roughness, metallic, normal, occlusion, emissive, clearcoat, clearcoat roughness, opacity)
-- **Mesh rendering** — triangulated geometry with UV support and smooth vertex normals
-- **Animation playback** — timecode scrubbing and play/pause via a minimal playbar, shown only when the asset has actual animated transforms
-- **Stage summary** — prim count, layer count, fps, time range, up axis
-- **USD 26 compatibility** — works with older USDZ files that authored `material:binding` before `UsdShadeMaterialBindingAPI` became a formal applied-API schema
+- **File formats** - USD, USDA, USDC, USDZ, multi-file folder drops, and
+  MaterialX sidecar resources.
+- **Unified mesh runtime** - one native `WebViewStageDriver` handles static
+  meshes, animated transforms, skinned meshes, variants, payload edits, UVs,
+  authored normals, subsets, and material bindings.
+- **Materials** - UsdPreviewSurface PBR scalars and texture slots (diffuse,
+  roughness, metallic, normal, occlusion, emissive, clearcoat, clearcoat
+  roughness, opacity), plus MaterialX materials through the pinned Three.js
+  `MaterialXLoader` fork.
+- **Variant sets** - variant badges in the scene graph, dropdown selection in
+  the attributes panel, and coherent geometry/material redraws after selection
+  changes.
+- **Payloads** - per-prim load/unload from the scene graph, bulk load/unload
+  from the Stage menu, and a stage-open policy for loading payloads by default.
+- **Gaussian splats** - USD-authored splat data rendered with SparkJS alongside
+  mesh content, with fidelity and detail controls for spherical harmonics and
+  splat scale.
+- **Animation playback** - timecode scrubbing and play/pause via a minimal
+  playbar, shown when the loaded stage has an animated time range.
+- **Inspection UI** - scene graph, prim attributes, selection highlighting,
+  payload and variant badges, stage summary, renderer stats, up-axis handling,
+  and HDRI/default lighting controls.
+- **USD 26 compatibility** - works with older USDZ files that authored
+  `material:binding` before `UsdShadeMaterialBindingAPI` became a formal
+  applied-API schema.
+
+## Current Constraints
+
+- **Gaussian splats + MaterialX** - SparkJS is WebGL-only. MaterialX content
+  switches the viewport to `WebGPURenderer`, so splats are not rendered in that
+  combined mode; the status bar calls this out explicitly.
+- **MaterialX dependency** - `three` is pinned to a `bhouston/three.js` tarball
+  until upstream Three.js has matching `MaterialXLoader` support.
+- **Native source layout** - the native implementation is still concentrated in
+  `native/usd-webview-bindings/main.cpp`; see
+  [Material and Geometry Strategy](docs/material-geometry-strategy.md) for the
+  runtime architecture.
 
 ## Planned Features
 
-The following are scoped and in-progress. Features marked **[WASM]** require a C++ rebuild of the bindings; **[lib]** require a new JS dependency.
-
 | # | Feature | Notes |
 |---|---------|-------|
-| 1 | **Variant sets** — read and select USD variant sets | Shown as `V` badge in scene graph; dropdown selector in attributes panel; re-renders on change. **[WASM]** |
-| 2 | **Payloads** — per-prim load/unload + global load/unload all | `P` badge (grey = unloaded, green = loaded); right-click context menu on prim; View > Load/Unload All. **[WASM]** |
-| 3 | **Gaussian Splat support** — drop `.splat`/`.ply`/`.spz` files | Rendered via SparkJS alongside the Three.js scene; USD asset-reference path is future scope. **[lib]** |
-| 4 | **Wireframe** — quad-based, artist-friendly topology | Reconstructed from USD `faceVertexCounts` / `faceVertexIndices` (not triangulated diagonals); toggled from View menu. **[WASM]** |
-| 5 | **Unlit view** — flat/unlit shading mode | Swaps `MeshPhysicalMaterial` → `MeshBasicMaterial` preserving color + textures; toggled from View menu. |
-| 6 | **Viewport orientation gizmo** — Unity-style 3D axis cube | Uses Three.js `ViewHelper`; renders in viewport corner; click a face to snap camera. |
+| 1 | **Wireframe** - quad-based, artist-friendly topology | Reconstruct from USD `faceVertexCounts` / `faceVertexIndices` rather than showing triangulation diagonals; toggle from View menu. |
+| 2 | **Unlit view** - flat/unlit shading mode | Swap `MeshPhysicalMaterial` to `MeshBasicMaterial` while preserving color and textures; toggle from View menu. |
+| 3 | **Viewport orientation gizmo** - Unity-style 3D axis cube | Use Three.js `ViewHelper`; render in the viewport corner; click a face to snap the camera. |
+| 4 | **Performance pass** - lower per-frame allocation | Reuse JS-side buffers when counts match, add a transforms-only update path, and reduce matrix marshaling from `number[]`. |
 
 ## Architecture
 
 ```
 C++ (OpenUSD + Emscripten)          native/usd-webview-bindings/main.cpp
         ↓  compiled to WASM
-JS wrapper                           native/usd-webview-bindings/usdWebViewBindings.js
+JS wrapper                           public/usd-webview-bindings/usdWebViewBindings.js
         ↓  installed to public/
 TypeScript runtime                   src/usd/UsdWebViewRuntime.ts
         ↓
 Three.js viewport + app shell        src/viewer/ThreeViewport.ts  ·  src/main.ts
 ```
+
+The viewport geometry path is intentionally singular: `UsdWebViewRuntime`
+creates one native `WebViewStageDriver` per loaded stage. Static meshes,
+skinned meshes, animated transforms, variant changes, and payload changes all
+draw through that driver. Authored material payloads and Gaussian splats are
+side suppliers; they are not alternate mesh runtimes.
+
+## Why the bhouston three.js fork?
+
+`package.json` pins `three` to a tarball of `bhouston/three.js` because the
+viewer's MaterialX path depends on `MaterialXLoader` work that has not landed
+upstream yet. Swap back to upstream `three` once its `MaterialXLoader` reaches
+parity.
+
+## Testing
+
+```sh
+npm run test:unit        # vitest unit layer
+npm run test:regression  # visual regression: corpus in tests/corpus/,
+                         # committed baselines in tests/regression/baselines/
+npm run test             # both
+```
+
+Baseline changes are re-blessed with `npm run test:regression:bless` and
+reviewed as PNG diffs in git.
 
 ## Development
 
@@ -48,5 +103,5 @@ Open the local URL printed by Vite. The WASM bindings must be built first — se
 ## Documentation
 
 - [Building](docs/building.md) — Prerequisites and build instructions for the WASM bindings and frontend
-- [Material and Geometry Strategy](docs/material-geometry-strategy.md) — Native/Hydra vs authored-material responsibilities, plus the fresh-start stage-load methodology
+- [Material and Geometry Strategy](docs/material-geometry-strategy.md) — Unified stage-driver geometry, authored-material payloads, and known rendering constraints
 - [USD Material Fidelity](docs/usd-material-fidelity.md) — Local harness for USD-wrapping `material-fidelity` cases and validating the viewer translation boundary

@@ -158,6 +158,7 @@ app.innerHTML = `
       <div class="status-bar" id="statusBar" role="status" aria-live="polite">
         <span class="status-spinner" id="statusSpinner" hidden></span>
         <span class="status-mode" id="materialXModeLabel" hidden>Experimental MaterialX / WebGPU</span>
+        <span class="status-mode" id="splatDegradationLabel" hidden>Gaussian splats are not rendered with MaterialX content (SparkJS is WebGL-only)</span>
         <span class="status-label" id="statusLabel">Idle</span>
       </div>
       <input id="filePicker" type="file" multiple accept=".usd,.usda,.usdc,.usdz,.mtlx,.zip,.png,.jpg,.jpeg,.webp,.svg,.exr" style="display:none" />
@@ -253,6 +254,7 @@ export const playbarScrubber = requireElement(app.querySelector<HTMLInputElement
 export const statusSpinner = requireElement(app.querySelector<HTMLElement>("#statusSpinner"));
 export const statusLabel = requireElement(app.querySelector<HTMLElement>("#statusLabel"));
 export const materialXModeLabel = requireElement(app.querySelector<HTMLElement>("#materialXModeLabel"));
+export const splatDegradationLabel = requireElement(app.querySelector<HTMLElement>("#splatDegradationLabel"));
 export const sceneGraphList = requireElement(app.querySelector<HTMLElement>("#sceneGraphList"));
 export const attrPrimPath = requireElement(app.querySelector<HTMLElement>("#attrPrimPath"));
 export const attrList = requireElement(app.querySelector<HTMLElement>("#attrList"));

@@ -290,6 +290,11 @@ export class ThreeViewport {
       this.splatRenderer = null;
       this.installGameNavigationHandlers();
       this.resize();
+      // Gaussian splats are dropped on this renderer (SparkJS is
+      // WebGL-only); let the app surface the degradation explicitly.
+      this.host.dispatchEvent(new CustomEvent("renderer-switched", {
+        detail: { renderer: "webgpu", splatsUnavailable: true },
+      }));
       return true;
     } catch (error) {
       console.warn("Failed to initialize WebGPU renderer for MaterialX", error);

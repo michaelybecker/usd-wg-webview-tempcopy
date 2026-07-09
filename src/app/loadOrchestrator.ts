@@ -13,7 +13,7 @@ import {
 import { hidePlaybar, showPlaybar, updatePlaybarScrubber } from "./animation";
 import { applyLightingOptions, applyUpAxisOptions, replaceViewport } from "./menus";
 import { clearSceneGraph, renderSceneGraph } from "./sceneGraphPanel";
-import { renderRuntimeStatus, setStatus } from "./statusBar";
+import { renderRuntimeStatus, setStageHasGaussianSplats, setStatus } from "./statusBar";
 import { assetLabel, collectRendererStats, renderStageSummary } from "./summaries";
 
 export async function loadFiles(files: File[]): Promise<void> {
@@ -24,6 +24,7 @@ export async function loadFiles(files: File[]): Promise<void> {
 
   hidePlaybar();
   state.isLoadingStage = true;
+  setStageHasGaussianSplats(false);
   setStatus("loading USD stage...", true);
   if (automationEnabled) {
     setAutomationState("loading", "loading USD stage...");
@@ -72,6 +73,7 @@ export async function loadFiles(files: File[]): Promise<void> {
   renderRuntimeStatus(runtime.status);
   const gaussianSplats = result.gaussianSplats ?? [];
   const renderables = result.renderables ?? [];
+  setStageHasGaussianSplats(gaussianSplats.length > 0);
   await state.viewport.prepareForRenderables(renderables);
   if (loadSerial !== state.stageLoadSerial) {
     return;

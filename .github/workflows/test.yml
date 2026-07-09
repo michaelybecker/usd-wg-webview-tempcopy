@@ -1,0 +1,37 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run test:unit
+
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      # The committed wasm under public/ is the artifact under test; the
+      # regression runner spins up Vite + headless Chromium and gates
+      # screenshots of the corpus against tests/regression/baselines.
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:regression
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-diffs
+          path: tools/regression/results/
+          if-no-files-found: ignore

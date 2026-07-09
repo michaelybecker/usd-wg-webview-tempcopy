@@ -22,6 +22,10 @@ export class UsdWebViewRuntime {
   private materialXResources: RenderableTexture[] = [];
   private materialPayloadByPath = new Map<string, RenderableMaterial>();
   private hasStageDriver = false;
+  // Identity index arrays for corner-expanded meshes are constant per vertex
+  // count and only ever read downstream, so cache them by length instead of
+  // reallocating on every playback frame.
+  private identityIndicesByLength = new Map<number, Uint32Array>();
   currentStagePath: string | null = null;
 
   status: RuntimeStatus = {
@@ -197,10 +201,7 @@ export class UsdWebViewRuntime {
     // provided corner-stream normals are honored directly.
     const positions = new Float32Array(update.positions);
     const vertexCount = positions.length / 3;
-    const indices = new Uint32Array(vertexCount);
-    for (let index = 0; index < vertexCount; index += 1) {
-      indices[index] = index;
-    }
+    const indices = this.getIdentityIndices(vertexCount);
 
     const material = update.materialPath
       ? this.materialPayloadByPath.get(update.materialPath)
@@ -227,6 +228,19 @@ export class UsdWebViewRuntime {
       material,
       materialSubsets,
     };
+  }
+
+  private getIdentityIndices(vertexCount: number): Uint32Array {
+    const cached = this.identityIndicesByLength.get(vertexCount);
+    if (cached) {
+      return cached;
+    }
+    const indices = new Uint32Array(vertexCount);
+    for (let index = 0; index < vertexCount; index += 1) {
+      indices[index] = index;
+    }
+    this.identityIndicesByLength.set(vertexCount, indices);
+    return indices;
   }
 
   getSceneGraph(): SceneGraphPrim[] {

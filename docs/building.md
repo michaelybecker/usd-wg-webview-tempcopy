@@ -130,5 +130,5 @@ Current MaterialX behavior in this repo assumes:
 - MaterialX meshes flip UV `V` on the final geometry before sampling
 
 If MaterialX output suddenly regresses after a viewer refactor, verify the
-MaterialX `Flip V` path in `ThreeViewport.ts` before chasing native UV
-extraction again.
+MaterialX `Flip V` path in `src/viewer/GeometryBuilder.ts`; the unified stage
+driver already delivers UVs on the same corner stream as positions.
