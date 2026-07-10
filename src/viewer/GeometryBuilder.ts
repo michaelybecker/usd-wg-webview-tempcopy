@@ -3,7 +3,7 @@
 // keeps the face-expansion, normal-welding, fingerprint, and MaterialX UV
 // orientation rules unit-testable.
 
-import { Float32BufferAttribute, Vector3 } from "three";
+import { BufferGeometry, Float32BufferAttribute, Vector3 } from "three";
 import type { RenderableMaterial, RenderableMesh } from "../usd/types";
 
 // Face-expand: for each index, copy `stride` floats from `data`. Matches the
@@ -152,6 +152,33 @@ export function getUniqueSubsetMaterials(
   return materials;
 }
 
+export function getRenderableMaterialXEntries(renderable: RenderableMesh): NonNullable<RenderableMaterial["materialX"]>[] {
+  const entries: NonNullable<RenderableMaterial["materialX"]>[] = [];
+  const seen = new Set<string>();
+  const pushEntry = (materialX?: RenderableMaterial["materialX"]) => {
+    if (!materialX) {
+      return;
+    }
+    const key = `${materialX.path}:${materialX.materialName ?? ""}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    entries.push(materialX);
+  };
+
+  pushEntry(renderable.material?.materialX);
+  for (const subset of renderable.materialSubsets ?? []) {
+    pushEntry(subset.material?.materialX);
+  }
+
+  return entries;
+}
+
+export function getRenderableMaterialXPathList(renderable: RenderableMesh): string[] {
+  return getRenderableMaterialXEntries(renderable).map((materialX) => materialX.path);
+}
+
 export function getRenderableMaterialKey(
   renderable: RenderableMesh,
   materialXFlipV: boolean
@@ -166,4 +193,164 @@ export function getRenderableMaterialKey(
     }
     return material?.path ?? "default";
   }).join("|");
+}
+
+// --- Mesh geometry assembly (moved from ThreeViewport) -------------------
+// These build/refresh BufferGeometry from a RenderableMesh. They are free
+// functions so the face-expansion and normal/tangent rules stay in one
+// module; the facade passes the MaterialX flip setting and a tangent
+// warning sink.
+
+export interface GeometryBuildOptions {
+  materialXFlipV: boolean;
+  warnTangents: (renderable: RenderableMesh, detail: string) => void;
+}
+
+export function buildGeometry(renderable: RenderableMesh, opts: GeometryBuildOptions): BufferGeometry {
+  const { points, indices, uvs } = renderable;
+  const geo = new BufferGeometry();
+  geo.setAttribute("position", new Float32BufferAttribute(faceExpandAttr(points, indices, 3), 3));
+  if (uvs?.length) {
+    const uvAttr = new Float32BufferAttribute(faceExpandAttr(uvs, indices, 2), 2);
+    applyMaterialXUvOptions(uvAttr, renderable, opts.materialXFlipV);
+    geo.setAttribute("uv", uvAttr);
+    geo.setAttribute("uv1", uvAttr.clone());
+  }
+  if (renderable.materialSubsets?.length) {
+    applyGeometryGroups(geo, renderable);
+  }
+  setExpandedVertexNormals(geo, points, indices, renderable.normals);
+  setExpandedVertexTangents(geo, renderable, opts);
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+// Update only vertex positions on an existing geometry for animation frames.
+// Preserves UVs, normals/tangents re-computed from the original indexed topology.
+// Falls back to full rebuild only when vertex count changes (topology shift).
+export function updateGeometryPositions(
+  geo: BufferGeometry,
+  renderable: RenderableMesh,
+  opts: GeometryBuildOptions
+): void {
+  const pos = faceExpandAttr(renderable.points as number[], renderable.indices as number[], 3);
+  const posAttr = geo.attributes.position;
+  if (posAttr && posAttr.count * 3 === pos.length) {
+    // Same vertex count — update in place, keep UVs untouched
+    (posAttr.array as Float32Array).set(pos);
+    posAttr.needsUpdate = true;
+    setExpandedVertexNormals(geo, renderable.points, renderable.indices, renderable.normals);
+    setExpandedVertexTangents(geo, renderable, opts);
+  } else {
+    // Topology changed — full rebuild, but salvage UVs from the old geometry
+    const savedUv = geo.attributes.uv;
+    const savedUv1 = geo.attributes.uv1;
+    geo.dispose();
+    const newGeo = buildGeometry(renderable, opts);
+    // Copy attributes into the existing geometry object so the Mesh reference stays valid
+    for (const key of Object.keys(newGeo.attributes)) {
+      geo.setAttribute(key, newGeo.attributes[key]);
+    }
+    geo.index = newGeo.index;
+    geo.clearGroups();
+    for (const group of newGeo.groups) {
+      geo.addGroup(group.start, group.count, group.materialIndex ?? 0);
+    }
+    if (!geo.attributes.uv && savedUv) geo.setAttribute("uv", savedUv);
+    if (!geo.attributes.uv1 && savedUv1) geo.setAttribute("uv1", savedUv1);
+  }
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+}
+
+export function applyGeometryGroups(geo: BufferGeometry, renderable: RenderableMesh): void {
+  geo.clearGroups();
+  if (!renderable.materialSubsets?.length) return;
+  const slots = new Map<string, number>();
+  for (let index = 0; index < renderable.materialSubsets.length; ++index) {
+    const subset = renderable.materialSubsets[index];
+    const key = getSubsetMaterialKey(subset.material, subset.path);
+    if (!slots.has(key)) {
+      slots.set(key, slots.size);
+    }
+    geo.addGroup(subset.start, subset.count, slots.get(key) ?? 0);
+  }
+}
+
+export function setExpandedVertexNormals(
+  geo: BufferGeometry,
+  points: ArrayLike<number>,
+  indices: ArrayLike<number>,
+  providedNormals?: Float32Array
+): void {
+  // The unified stage driver supplies corner-stream normals (authored
+  // normals honored, native smooth-normal fallback); use them directly
+  // when they match the expanded vertex count instead of re-welding.
+  if (providedNormals && providedNormals.length === indices.length * 3) {
+    geo.setAttribute("normal", new Float32BufferAttribute(providedNormals, 3));
+    geo.attributes.normal.needsUpdate = true;
+    return;
+  }
+  const normals = buildIndexedVertexNormals(points, indices);
+  geo.setAttribute("normal", new Float32BufferAttribute(faceExpandAttr(normals, indices, 3), 3));
+  geo.attributes.normal.needsUpdate = true;
+}
+
+export function setExpandedVertexTangents(
+  geo: BufferGeometry,
+  renderable: RenderableMesh,
+  opts: GeometryBuildOptions
+): void {
+  const tangentAttribute = buildExpandedVertexTangents(renderable, opts);
+  if (tangentAttribute) {
+    geo.setAttribute("tangent", tangentAttribute);
+    geo.attributes.tangent.needsUpdate = true;
+    return;
+  }
+
+  if (geo.getAttribute("tangent")) {
+    geo.deleteAttribute("tangent");
+  }
+}
+
+function buildExpandedVertexTangents(
+  renderable: RenderableMesh,
+  opts: GeometryBuildOptions
+): Float32BufferAttribute | null {
+  const { points, indices, uvs } = renderable;
+  if (!uvs?.length) {
+    opts.warnTangents(renderable, "MaterialX tangent generation skipped because the mesh has no UVs.");
+    return null;
+  }
+
+  const indexedGeometry = new BufferGeometry();
+  try {
+    indexedGeometry.setAttribute("position", new Float32BufferAttribute(new Float32Array(points), 3));
+
+    const uvAttribute = new Float32BufferAttribute(new Float32Array(uvs), 2);
+    applyMaterialXUvOptions(uvAttribute, renderable, opts.materialXFlipV);
+    indexedGeometry.setAttribute("uv", uvAttribute);
+    indexedGeometry.setAttribute("normal", new Float32BufferAttribute(buildIndexedVertexNormals(points, indices), 3));
+    indexedGeometry.setIndex(Array.from(indices, (value) => Number(value)));
+    indexedGeometry.computeTangents();
+
+    const tangent = indexedGeometry.getAttribute("tangent");
+    if (!tangent) {
+      opts.warnTangents(renderable, "MaterialX tangent generation finished without producing a tangent attribute.");
+      return null;
+    }
+
+    return new Float32BufferAttribute(faceExpandAttr(tangent.array as ArrayLike<number>, indices, 4), 4);
+  } catch (error) {
+    console.warn("[USD WebView] Failed to compute tangents for mesh geometry", {
+      path: renderable.path,
+      materialPaths: getRenderableMaterialXPathList(renderable),
+      error,
+    });
+    opts.warnTangents(renderable, "MaterialX tangent generation failed for this mesh.");
+    return null;
+  } finally {
+    indexedGeometry.dispose();
+  }
 }
