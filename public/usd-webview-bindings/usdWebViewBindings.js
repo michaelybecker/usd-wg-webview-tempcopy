@@ -1,5 +1,5 @@
-const _wasmBuildId = "wasm-39907522d4d2"; // stamped by tools/native-build/stamp-build.mjs
-const _wrapperBuildId = "wasm-39907522d4d2";
+const _wasmBuildId = "wasm-83950026afc6"; // stamped by tools/native-build/stamp-build.mjs
+const _wrapperBuildId = "wasm-83950026afc6";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
