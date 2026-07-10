@@ -3,7 +3,7 @@
 ## Summary
 
 The viewer has **one geometry authority**: the native `WebViewStageDriver`
-(`native/usd-webview-bindings/main.cpp`). The four competing mesh paths that
+(`native/usd-webview-bindings/src/unifiedDriver.cpp`). The four competing mesh paths that
 previously handed off mid-session (reference Hydra driver, Hydra sync driver,
 legacy extraction, and the mid-session driver swap) were removed in the
 geometry-runtime unification refactor. `git grep ReferenceHydra` returning

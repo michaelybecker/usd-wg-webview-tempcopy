@@ -40,10 +40,6 @@ required.
   combined mode; the status bar calls this out explicitly.
 - **MaterialX dependency** - `three` is pinned to a `bhouston/three.js` tarball
   until upstream Three.js has matching `MaterialXLoader` support.
-- **Native source layout** - the native implementation is still concentrated in
-  `native/usd-webview-bindings/main.cpp`; see
-  [Material and Geometry Strategy](docs/material-geometry-strategy.md) for the
-  runtime architecture.
 
 ## Planned Features
 
@@ -57,14 +53,25 @@ required.
 ## Architecture
 
 ```
-C++ (OpenUSD + Emscripten)          native/usd-webview-bindings/main.cpp
+C++ (OpenUSD + Emscripten)          native/usd-webview-bindings/src/*.cpp
         ↓  compiled to WASM
 JS wrapper                           public/usd-webview-bindings/usdWebViewBindings.js
         ↓  installed to public/
 TypeScript runtime                   src/usd/UsdWebViewRuntime.ts
         ↓
-Three.js viewport + app shell        src/viewer/ThreeViewport.ts  ·  src/main.ts
+Three.js viewport + app shell        src/viewer/*  ·  src/app/*  ·  src/main.ts
 ```
+
+The native side is split into translation units under
+`native/usd-webview-bindings/src/` — `unifiedDriver.cpp` (the stage driver),
+`materials.cpp`, `meshExtraction.cpp`, `pointInstancer.cpp`,
+`skelBinding.cpp`, `splats.cpp`, `stageApi.cpp`, `stageRegistry.cpp`,
+`jsInterop.cpp`, and `bindings.cpp` — sharing `webviewCommon.h`. The viewport
+is a facade (`src/viewer/ThreeViewport.ts`) over focused modules:
+`RendererManager`, `GeometryBuilder`, `MaterialFactory`, `TextureCache`,
+`Lighting`, `Navigation`, and `Picking`. See
+[Material and Geometry Strategy](docs/material-geometry-strategy.md) for the
+runtime architecture.
 
 The viewport geometry path is intentionally singular: `UsdWebViewRuntime`
 creates one native `WebViewStageDriver` per loaded stage. Static meshes,
