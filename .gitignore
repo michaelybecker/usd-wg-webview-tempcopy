@@ -11,7 +11,6 @@ build/
 .env.*.local
 docs/private/
 .vscode/
-package-lock.json
 public/localAssets/
 tools/usd-material-fidelity/generated/
 tools/usd-material-fidelity/results/
