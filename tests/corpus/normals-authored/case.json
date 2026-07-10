@@ -1,0 +1,6 @@
+{
+  "id": "normals-authored",
+  "notes": "Authored faceVarying normals are deliberately non-geometric (all +Y). Baseline documents that they are currently ignored (TS welding recomputes). Re-blessed in Phase 3 when authored normals are honored.",
+  "rootFile": "scene.usda",
+  "captures": [{ "name": "default" }]
+}

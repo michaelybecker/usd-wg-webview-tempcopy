@@ -1,0 +1,45 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Mesh "Anchor" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4]
+        point3f[] points = [(-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (-0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5), (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5)]
+        double3 xformOp:translate = (-1.5, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </World/Materials/Grey>
+    }
+
+    def "PayloadedAsset" (
+        payload = @./payload.usda@</PayloadRoot>
+    )
+    {
+        double3 xformOp:translate = (1.5, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Scope "Materials"
+    {
+        def Material "Grey"
+        {
+            token outputs:surface.connect = </World/Materials/Grey/Shader.outputs:surface>
+
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.5, 0.5, 0.55)
+                float inputs:roughness = 0.6
+                token outputs:surface
+            }
+        }
+    }
+}

@@ -1,0 +1,38 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Mesh "Billboard" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4]
+        point3f[] points = [(-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (-0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5), (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5)]
+        texCoord2f[] primvars:st = [(0, 0), (2, 0), (2, 2), (0, 2), (0, 0), (2, 0), (2, 2), (0, 2), (0, 0), (2, 0), (2, 2), (0, 2), (0, 0), (2, 0), (2, 2), (0, 2), (0, 0), (2, 0), (2, 2), (0, 2), (0, 0), (2, 0), (2, 2), (0, 2)] (
+            interpolation = "faceVarying"
+        )
+        rel material:binding = </World/Materials/TiledLetter>
+    }
+
+    def Scope "Materials"
+    {
+        def Material "TiledLetter"
+        {
+            token outputs:surface.connect = </World/Materials/TiledLetter/MtlxShader.outputs:surface>
+
+            def Shader "MtlxShader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mtlx:sourceAsset = @./material/tiled-letter.mtlx@
+                uniform token info:mtlx:sourceAsset:subIdentifier = "M_tiledLetter"
+                token outputs:surface
+            }
+        }
+    }
+}

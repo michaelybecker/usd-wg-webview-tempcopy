@@ -1,0 +1,15 @@
+{
+  "id": "payload-toggle",
+  "rootFile": "scene.usda",
+  "captures": [
+    { "name": "loaded" },
+    {
+      "name": "unloaded",
+      "payloadOps": [{ "primPath": "/World/PayloadedAsset", "loaded": false }]
+    },
+    {
+      "name": "reloaded",
+      "payloadOps": [{ "primPath": "/World/PayloadedAsset", "loaded": true }]
+    }
+  ]
+}

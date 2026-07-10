@@ -1,0 +1,8 @@
+{
+  "id": "animated-xform",
+  "rootFile": "scene.usda",
+  "captures": [
+    { "name": "t01", "timeCode": 1 },
+    { "name": "t24", "timeCode": 24 }
+  ]
+}

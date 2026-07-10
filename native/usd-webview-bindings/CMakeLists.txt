@@ -18,7 +18,16 @@ if(TARGET TBB::tbb)
 endif()
 
 add_executable(usdWebViewBindingsModule
-    main.cpp
+    src/bindings.cpp
+    src/jsInterop.cpp
+    src/materials.cpp
+    src/meshExtraction.cpp
+    src/pointInstancer.cpp
+    src/skelBinding.cpp
+    src/splats.cpp
+    src/stageApi.cpp
+    src/stageRegistry.cpp
+    src/unifiedDriver.cpp
 )
 
 target_compile_features(usdWebViewBindingsModule PRIVATE cxx_std_17)

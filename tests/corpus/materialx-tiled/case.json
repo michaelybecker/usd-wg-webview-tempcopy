@@ -1,0 +1,7 @@
+{
+  "id": "materialx-tiled",
+  "notes": "Asymmetric letter texture: any UV flip regression is a guaranteed pixel diff. Must stay byte-similar through Phase 3.",
+  "rootFile": "scene.usda",
+  "tags": ["requiresWebGpu"],
+  "captures": [{ "name": "default" }]
+}

@@ -1,0 +1,6 @@
+{
+  "id": "skinned-no-range",
+  "notes": "No authored start/endTimeCode: documents the current animation-range routing bug (no skinning driver engages). Re-blessed in Phase 3 when routing moves to capability probing.",
+  "rootFile": "scene.usda",
+  "captures": [{ "name": "default" }]
+}

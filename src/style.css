@@ -19,6 +19,10 @@ body {
   overflow: hidden;
 }
 
+:root.automation-mode body {
+  background: #181d21;
+}
+
 button,
 input {
   font: inherit;
@@ -588,6 +592,25 @@ input {
   background: rgb(99 210 255 / 10%);
   content: "";
   pointer-events: none;
+}
+
+:root.automation-mode .shell {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 1fr;
+}
+
+:root.automation-mode .menubar,
+:root.automation-mode .scene-graph,
+:root.automation-mode .attr-panel,
+:root.automation-mode .stats-panel,
+:root.automation-mode .tutorial-overlay,
+:root.automation-mode .viewport::after {
+  display: none !important;
+}
+
+:root.automation-mode .viewport {
+  grid-column: 1;
+  grid-row: 1;
 }
 
 /* ---- Status list (shared) ---- */

@@ -1,0 +1,5 @@
+{
+  "id": "material-subsets",
+  "rootFile": "scene.usda",
+  "captures": [{ "name": "default" }]
+}

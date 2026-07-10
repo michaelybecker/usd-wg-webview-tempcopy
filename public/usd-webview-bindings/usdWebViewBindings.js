@@ -1,5 +1,5 @@
-const _wasmBuildId = "extcomp-sprim-2026-06-23a"; // bump on every WASM rebuild to bust browser cache
-const _wrapperBuildId = "extcomp-sprim-2026-06-23a";
+const _wasmBuildId = "wasm-83950026afc6"; // stamped by tools/native-build/stamp-build.mjs
+const _wrapperBuildId = "wasm-83950026afc6";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
@@ -44,6 +44,10 @@ window.UsdWebViewBindings = {
     });
 
     module.InitializeRuntime();
+
+    // Debug/automation hook: raw module access for console A/B comparisons
+    // and refactor spikes. Not part of the supported API surface.
+    window.__USD_WEBVIEW_MODULE__ = module;
 
     // Stores the original immutable bytes for each file, keyed by normalized path.
     const _originalLayerData = new Map();
@@ -120,98 +124,52 @@ window.UsdWebViewBindings = {
         }
         writeToVfs(filePath, data);
       },
-      extractRenderables(path) {
-        return module.ExtractRenderables(normalizePath(path));
-      },
-      extractRenderablesWithMaterials(path) {
-        return module.ExtractRenderablesWithMaterials(normalizePath(path));
-      },
-      extractRenderablesWithMaterialsUnderRoot(path, primPath) {
-        if (!module.ExtractRenderablesWithMaterialsUnderRoot) {
-          return module.ExtractRenderablesWithMaterials(normalizePath(path));
+      closeStage(path) {
+        if (module.CloseStage) {
+          module.CloseStage(normalizePath(path));
         }
-        return module.ExtractRenderablesWithMaterialsUnderRoot(normalizePath(path), primPath);
-      },
-      extractRenderablesAtTime(path, timeCode) {
-        return module.ExtractRenderablesAtTime(normalizePath(path), timeCode);
-      },
-      extractHydraRenderablesAtTime(path, timeCode) {
-        return module.ExtractHydraRenderablesAtTime(normalizePath(path), timeCode);
-      },
-      extractHydraRenderableSnapshotAtTime(path, timeCode) {
-        if (!module.ExtractHydraRenderableSnapshotAtTime) {
-          return null;
+        // Stage loads are whole-world replacements, so every tracked data
+        // file belongs to the outgoing stage: unlink them all from MEMFS.
+        for (const filePath of _originalLayerData.keys()) {
+          if (module.FS_analyzePath(filePath).exists) {
+            module.FS_unlink(filePath);
+          }
         }
-        return module.ExtractHydraRenderableSnapshotAtTime(normalizePath(path), timeCode);
+        _originalLayerData.clear();
       },
-      extractHydraRenderableSubtreeAtTime(path, primPath, timeCode) {
-        if (!module.ExtractHydraRenderableSubtreeAtTime) {
-          return null;
-        }
-        return module.ExtractHydraRenderableSubtreeAtTime(normalizePath(path), primPath, timeCode);
+      createStageDriver(path) {
+        return module.CreateStageDriver
+          ? module.CreateStageDriver(normalizePath(path))
+          : false;
       },
-      createHydraSyncDriver(path) {
-        if (!module.CreateHydraSyncDriver) {
-          return null;
+      deleteStageDriver(path) {
+        if (module.DeleteStageDriver) {
+          module.DeleteStageDriver(normalizePath(path));
         }
-        const handle = module.CreateHydraSyncDriver(normalizePath(path));
-        if (!handle) {
-          return null;
-        }
-        return {
-          SetTime(timeCode) {
-            module.SetHydraSyncDriverTime(handle, timeCode);
-          },
-          Draw() {
-            return module.DrawHydraSyncDriver(handle);
-          },
-          GetStartTimeCode() {
-            return module.GetHydraSyncDriverStartTimeCode(handle);
-          },
-          GetEndTimeCode() {
-            return module.GetHydraSyncDriverEndTimeCode(handle);
-          },
-          GetTimeCodesPerSecond() {
-            return module.GetHydraSyncDriverTimeCodesPerSecond(handle);
-          },
-          delete() {
-            module.DeleteHydraSyncDriver(handle);
-          },
-        };
       },
-      createReferenceHydraDriver(path, renderInterface) {
-        if (!module.CreateReferenceHydraDriver) {
-          console.warn("[USD WebView] CreateReferenceHydraDriver is not available");
-          return null;
-        }
-        const handle = module.CreateReferenceHydraDriver(
-          normalizePath(path),
-          renderInterface
-        );
-        if (!handle) {
-          console.warn("[USD WebView] reference hydra driver returned null handle");
-          return null;
-        }
-        return {
-          SetTime(timeCode) {
-            module.SetReferenceHydraDriverTime(handle, timeCode);
-          },
-          Draw() {
-            module.DrawReferenceHydraDriver(handle);
-          },
-          GetStartTimeCode() {
-            return module.GetReferenceHydraDriverStartTimeCode(handle);
-          },
-          GetEndTimeCode() {
-            return module.GetReferenceHydraDriverEndTimeCode(handle);
-          },
-          GetTimeCodesPerSecond() {
-            return module.GetReferenceHydraDriverTimeCodesPerSecond(handle);
-          },
-          delete() {
-            module.DeleteReferenceHydraDriver(handle);
-          },
-        };
+      stageDriverSetTime(path, timeCode) {
+        module.StageDriverSetTime(normalizePath(path), timeCode);
+      },
+      stageDriverDraw(path, full) {
+        return module.StageDriverDraw(normalizePath(path), full);
+      },
+      stageDriverDrawSubtree(path, primPath) {
+        return module.StageDriverDrawSubtree(normalizePath(path), primPath);
+      },
+      stageDriverGetTiming(path) {
+        return module.StageDriverGetTiming(normalizePath(path));
+      },
+      stageDriverGetCapabilities(path) {
+        return module.StageDriverGetCapabilities(normalizePath(path));
+      },
+      stageDriverGetDiagnostics(path) {
+        return module.StageDriverGetDiagnostics(normalizePath(path));
+      },
+      stageDriverNotifyStageEdited(path) {
+        module.StageDriverNotifyStageEdited(normalizePath(path));
+      },
+      extractMaterialPayloads(path) {
+        return module.ExtractMaterialPayloads(normalizePath(path));
       },
       extractGaussianSplats(path) {
         return module.ExtractGaussianSplats(normalizePath(path));
