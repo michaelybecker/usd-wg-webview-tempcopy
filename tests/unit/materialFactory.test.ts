@@ -46,6 +46,16 @@ describe("materialXUsesExrImages", () => {
     expect(materialXUsesExrImages(input)).toBe(true);
   });
 
+  it("detects EXR image file inputs inside USDZ package paths", () => {
+    const input = `<materialx>
+  <image name="albedo" type="color3">
+    <input name="file" type="filename" value="/shot.usdz[assets/odie/albedo.exr]" />
+  </image>
+</materialx>`;
+
+    expect(materialXUsesExrImages(input)).toBe(true);
+  });
+
   it("ignores non-EXR image file inputs", () => {
     const input = `<materialx>
   <image name="albedo" type="color3">
