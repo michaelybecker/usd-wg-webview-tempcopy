@@ -54,7 +54,7 @@ This branch currently implements a generic per-case packaging and capture path:
 That remains a valid general mechanism, but it is no longer the most likely
 long-term shape for the shaderball surface-material corpus.
 
-In `/home/mbecker/dev/mtlx/material-samples`, there is now a stronger candidate
+In the sibling `material-samples` checkout, there is now a stronger candidate
 artifact for that job:
 
 - `usd/materialx_shaderball/`
@@ -92,7 +92,7 @@ Once that upstream artifact is stable, the likely next refactor here is:
 
 ## Directory Layout
 
-The harness lives under [tools/usd-material-fidelity](/home/mbecker/dev/USD/usd-wg-webview/tools/usd-material-fidelity):
+The harness lives under [tools/usd-material-fidelity](../tools/usd-material-fidelity):
 
 - `config.samples.json` stores the local corpus and carrier-scene configuration
 - `import-material-fidelity.mjs` discovers and copies selected MaterialX cases
