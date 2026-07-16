@@ -50,6 +50,7 @@ export async function loadFiles(files: File[]): Promise<void> {
       files,
       rootFile,
       loadAllPayloads: state.loadAllPayloadsOnStageOpen,
+      purposePolicy: state.purposePolicy,
     });
   } catch (error) {
     if (loadSerial === state.stageLoadSerial) {

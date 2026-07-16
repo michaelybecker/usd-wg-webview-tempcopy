@@ -128,7 +128,12 @@ Current MaterialX behavior in this repo assumes:
 
 - the viewer keeps the MaterialX loader in bottom-left mode
 - MaterialX meshes flip UV `V` on the final geometry before sampling
+- inline MaterialX graphs that use EXR image nodes can fall back to standard
+  texture slots, because Three's MaterialX image path does not currently handle
+  those EXRs correctly; fallback meshes keep authored UVs and do not apply the
+  MaterialX `V` flip
 
 If MaterialX output suddenly regresses after a viewer refactor, verify the
-MaterialX `Flip V` path in `src/viewer/GeometryBuilder.ts`; the unified stage
-driver already delivers UVs on the same corner stream as positions.
+MaterialX `Flip V` path in `src/viewer/GeometryBuilder.ts` and the EXR fallback
+rules in `src/viewer/materialXCompatibility.ts`; the unified stage driver
+already delivers UVs on the same corner stream as positions.

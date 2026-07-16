@@ -21,6 +21,7 @@
 #include "pxr/base/gf/vec3d.h"
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/base/gf/vec3h.h"
+#include "pxr/base/gf/vec4f.h"
 #include "pxr/base/tf/token.h"
 #include "pxr/imaging/hd/bprim.h"
 #include "pxr/imaging/hd/camera.h"
@@ -122,10 +123,12 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cctype>
 #include <limits>
 #include <map>
 #include <memory>
 #include <sstream>
+#include <iomanip>
 #include <string>
 #include <chrono>
 #include <set>
@@ -333,8 +336,14 @@ emscripten::val ExtractGaussianSplats(const std::string& path);
 bool CreateStageDriver(const std::string& stagePath);
 void DeleteStageDriver(const std::string& stagePath);
 void StageDriverSetTime(const std::string& stagePath, double timeCode);
-emscripten::val StageDriverDraw(const std::string& stagePath, bool full);
-emscripten::val StageDriverDrawSubtree(const std::string& stagePath, const std::string& primPath);
+emscripten::val StageDriverDraw(
+    const std::string& stagePath,
+    bool full,
+    const std::string& purposePolicy = "defaultRender");
+emscripten::val StageDriverDrawSubtree(
+    const std::string& stagePath,
+    const std::string& primPath,
+    const std::string& purposePolicy = "defaultRender");
 emscripten::val StageDriverGetTiming(const std::string& stagePath);
 emscripten::val StageDriverGetCapabilities(const std::string& stagePath);
 emscripten::val StageDriverGetDiagnostics(const std::string& stagePath);

@@ -106,7 +106,14 @@ export type StageLoadRequest = {
   files: File[];
   rootFile?: File;
   loadAllPayloads?: boolean;
+  purposePolicy?: RenderPurposePolicy;
 };
+
+export type RenderPurposePolicy =
+  | "defaultRender"
+  | "render"
+  | "proxy"
+  | "all";
 
 export type RenderableGaussianSplat = {
   path: string;
@@ -233,8 +240,8 @@ export type UsdWebViewBindings = {
   createStageDriver?: (stagePath: string) => boolean;
   deleteStageDriver?: (stagePath: string) => void;
   stageDriverSetTime?: (stagePath: string, timeCode: number) => void;
-  stageDriverDraw?: (stagePath: string, full: boolean) => DrawResult | undefined;
-  stageDriverDrawSubtree?: (stagePath: string, primPath: string) => DrawResult | undefined;
+  stageDriverDraw?: (stagePath: string, full: boolean, purposePolicy: RenderPurposePolicy) => DrawResult | undefined;
+  stageDriverDrawSubtree?: (stagePath: string, primPath: string, purposePolicy: RenderPurposePolicy) => DrawResult | undefined;
   stageDriverGetTiming?: (stagePath: string) => { start?: number; end?: number; fps?: number };
   stageDriverGetCapabilities?: (stagePath: string) => StageDriverCapabilities | undefined;
   stageDriverGetDiagnostics?: (stagePath: string) => StageLoadDiagnostics | undefined;

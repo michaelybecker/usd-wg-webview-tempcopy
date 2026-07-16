@@ -18,6 +18,7 @@ import {
   renderableHasMaterialX,
 } from "./GeometryBuilder";
 import type { TextureCache } from "./TextureCache";
+import { materialShouldUseTextureFallback, prepareMaterialXForThree } from "./materialXCompatibility";
 
 const TEXT_DECODER = new TextDecoder();
 
@@ -133,7 +134,11 @@ export class MaterialFactory {
     }
 
     try {
-      const materialXText = TEXT_DECODER.decode(materialX.data);
+      const originalMaterialXText = TEXT_DECODER.decode(materialX.data);
+      if (materialShouldUseTextureFallback(rmat)) {
+        return null;
+      }
+      const materialXText = prepareMaterialXForThree(originalMaterialXText);
       const result = this.materialXLoader.parse(materialXText, {
         materialName: materialX.materialName,
         archiveResolver: (uri: string) => this.resolveMaterialXResource(uri, materialX.path, materialX.resources ?? []),
@@ -179,7 +184,9 @@ export class MaterialFactory {
     renderable: RenderableMesh,
     rmat = renderable.material
   ): MeshPhysicalMaterial {
-    const [r = 0.72, g = 0.72, b = 0.72] = rmat?.diffuseColor ?? renderable.color ?? [];
+    const [r = 0.72, g = 0.72, b = 0.72] = rmat?.diffuseTexture
+      ? [1, 1, 1]
+      : rmat?.diffuseColor ?? renderable.color ?? [];
     const material = new MeshPhysicalMaterial({
       color: new Color(r, g, b),
       metalness: rmat?.metallicTexture ? 1.0 : (rmat?.metallic ?? 0.05),
@@ -201,7 +208,9 @@ export class MaterialFactory {
     renderable: RenderableMesh,
     rmat = renderable.material
   ): void {
-    const [r = 0.72, g = 0.72, b = 0.72] = rmat?.diffuseColor ?? renderable.color ?? [];
+    const [r = 0.72, g = 0.72, b = 0.72] = rmat?.diffuseTexture
+      ? [1, 1, 1]
+      : rmat?.diffuseColor ?? renderable.color ?? [];
     material.color.setRGB(r, g, b);
     material.metalness = rmat?.metallicTexture ? 1.0 : (rmat?.metallic ?? 0.05);
     material.roughness = rmat?.roughnessTexture ? 1.0 : (rmat?.roughness ?? 0.55);
@@ -299,7 +308,7 @@ export class MaterialFactory {
 }
 
 function normalizeAssetPath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/^\.\//, "");
+  return path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
 }
 
 function createDataUrl(bytes: Uint8Array, mimeType: string): string {

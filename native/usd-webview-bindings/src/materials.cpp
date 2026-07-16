@@ -416,6 +416,424 @@ _GetMaterialXReferenceForMaterialPrim(
     return false;
 }
 
+std::string
+_XmlEscape(const std::string& value)
+{
+    std::string result;
+    result.reserve(value.size());
+    for (char c : value) {
+        switch (c) {
+            case '&': result += "&amp;"; break;
+            case '<': result += "&lt;"; break;
+            case '>': result += "&gt;"; break;
+            case '"': result += "&quot;"; break;
+            case '\'': result += "&apos;"; break;
+            default: result += c; break;
+        }
+    }
+    return result;
+}
+
+std::string
+_MtlxTypeForSdfType(const SdfValueTypeName& typeName)
+{
+    const std::string type = typeName.GetAsToken().GetString();
+    if (type == "color3f") return "color3";
+    if (type == "color4f") return "color4";
+    if (type == "float2") return "vector2";
+    if (type == "float3" || type == "vector3f" || type == "normal3f") return "vector3";
+    if (type == "float4" || type == "vector4f") return "vector4";
+    if (type == "asset") return "filename";
+    if (type == "token" || type == "string") return "string";
+    if (type == "int") return "integer";
+    return type.empty() ? "float" : type;
+}
+
+std::string
+_FormatFloat(float value)
+{
+    std::ostringstream out;
+    out << std::setprecision(8) << value;
+    return out.str();
+}
+
+bool
+_PathLooksAbsolute(const std::string& path)
+{
+    return !path.empty() &&
+        (path[0] == '/' ||
+         path[0] == '\\' ||
+         (path.size() > 2 && std::isalpha(path[0]) && path[1] == ':'));
+}
+
+std::string
+_FormatMtlxValue(
+    const VtValue& value,
+    const SdfLayerHandle& anchorLayer)
+{
+    if (value.IsHolding<float>()) {
+        return _FormatFloat(value.UncheckedGet<float>());
+    }
+    if (value.IsHolding<double>()) {
+        std::ostringstream out;
+        out << std::setprecision(12) << value.UncheckedGet<double>();
+        return out.str();
+    }
+    if (value.IsHolding<int>()) {
+        return std::to_string(value.UncheckedGet<int>());
+    }
+    if (value.IsHolding<std::string>()) {
+        return value.UncheckedGet<std::string>();
+    }
+    if (value.IsHolding<TfToken>()) {
+        return value.UncheckedGet<TfToken>().GetString();
+    }
+    if (value.IsHolding<SdfAssetPath>()) {
+        const SdfAssetPath& asset = value.UncheckedGet<SdfAssetPath>();
+        std::string path = !asset.GetResolvedPath().empty()
+            ? asset.GetResolvedPath()
+            : asset.GetAssetPath();
+        if (anchorLayer && !path.empty() && _PathLooksAbsolute(path)) {
+            return path;
+        }
+        if (anchorLayer && !path.empty()) {
+            const std::string anchored = anchorLayer->ComputeAbsolutePath(path);
+            if (!anchored.empty()) {
+                return anchored;
+            }
+        }
+        return path;
+    }
+    if (value.IsHolding<GfVec2f>()) {
+        const GfVec2f& v = value.UncheckedGet<GfVec2f>();
+        return _FormatFloat(v[0]) + ", " + _FormatFloat(v[1]);
+    }
+    if (value.IsHolding<GfVec3f>()) {
+        const GfVec3f& v = value.UncheckedGet<GfVec3f>();
+        return _FormatFloat(v[0]) + ", " + _FormatFloat(v[1]) + ", " +
+            _FormatFloat(v[2]);
+    }
+    if (value.IsHolding<GfVec4f>()) {
+        const GfVec4f& v = value.UncheckedGet<GfVec4f>();
+        return _FormatFloat(v[0]) + ", " + _FormatFloat(v[1]) + ", " +
+            _FormatFloat(v[2]) + ", " + _FormatFloat(v[3]);
+    }
+    return std::string();
+}
+
+std::string
+_MtlxCategoryForShaderId(const TfToken& shaderId)
+{
+    const std::string id = shaderId.GetString();
+    if (id == "ND_standard_surface_surfaceshader") return "standard_surface";
+    if (TfStringStartsWith(id, "ND_image_")) return "image";
+    if (TfStringStartsWith(id, "ND_saturate_")) return "saturate";
+    if (id == "ND_normalmap") return "normalmap";
+    if (TfStringStartsWith(id, "ND_UsdPrimvarReader_")) return "geompropvalue";
+    if (TfStringStartsWith(id, "ND_")) {
+        std::string category = id.substr(3);
+        const size_t suffixPos = category.rfind('_');
+        if (suffixPos != std::string::npos) {
+            const std::string suffix = category.substr(suffixPos + 1);
+            if (suffix == "float" || suffix == "color3" || suffix == "color4" ||
+                suffix == "vector2" || suffix == "vector3" ||
+                suffix == "vector4" || suffix == "surfaceshader") {
+                category = category.substr(0, suffixPos);
+            }
+        }
+        return category;
+    }
+    return id;
+}
+
+UsdPrim
+_ResolveConnectedPrim(const UsdStageWeakPtr& stage, const SdfPath& target)
+{
+    if (!stage) {
+        return UsdPrim();
+    }
+    UsdPrim targetPrim = stage->GetPrimAtPath(target.GetPrimPath());
+    if (!targetPrim) {
+        return UsdPrim();
+    }
+    if (targetPrim.IsA<UsdShadeShader>()) {
+        return targetPrim;
+    }
+
+    if (target.IsPropertyPath()) {
+        UsdAttribute output = targetPrim.GetAttribute(target.GetNameToken());
+        SdfPathVector connections;
+        if (output && output.GetConnections(&connections) && !connections.empty()) {
+            return _ResolveConnectedPrim(stage, connections[0]);
+        }
+    }
+    return targetPrim.IsA<UsdShadeShader>() ? targetPrim : UsdPrim();
+}
+
+UsdPrim
+_FindInlineMaterialXSurfaceShaderPrim(const UsdPrim& materialPrim)
+{
+    UsdAttribute mtlxSurface =
+        materialPrim.GetAttribute(TfToken("outputs:mtlx:surface"));
+    SdfPathVector connections;
+    if (mtlxSurface &&
+        mtlxSurface.GetConnections(&connections) &&
+        !connections.empty()) {
+        return _ResolveConnectedPrim(materialPrim.GetStage(), connections[0]);
+    }
+
+    return UsdPrim();
+}
+
+std::string
+_InlineMaterialXPath(const UsdPrim& materialPrim)
+{
+    const std::string filename =
+        "__inline_" + materialPrim.GetName().GetString() + ".mtlx";
+    for (const SdfPrimSpecHandle& spec : materialPrim.GetPrimStack()) {
+        if (!spec || !spec->GetLayer()) {
+            continue;
+        }
+        const std::string path = spec->GetLayer()->ComputeAbsolutePath(filename);
+        if (!path.empty()) {
+            return path;
+        }
+    }
+    std::string path = materialPrim.GetPath().GetString();
+    std::replace(path.begin(), path.end(), '/', '_');
+    return "inline:" + path + ".mtlx";
+}
+
+SdfLayerHandle
+_AnchorLayerForPrim(const UsdPrim& prim)
+{
+    for (const SdfPrimSpecHandle& spec : prim.GetPrimStack()) {
+        if (spec && spec->GetLayer()) {
+            return spec->GetLayer();
+        }
+    }
+    return SdfLayerHandle();
+}
+
+std::string
+_MtlxOutputTypeForShaderPrim(
+    const UsdPrim& shaderPrim,
+    const std::string& category)
+{
+    std::string outputType = "float";
+    UsdAttribute outAttr = shaderPrim.GetAttribute(TfToken("outputs:out"));
+    if (!outAttr) {
+        outAttr = shaderPrim.GetAttribute(TfToken("outputs:surface"));
+    }
+    if (outAttr) {
+        outputType = _MtlxTypeForSdfType(outAttr.GetTypeName());
+        if (outputType == "token" || outputType == "string") {
+            outputType = category == "standard_surface" ? "surfaceshader" : "float";
+        }
+    }
+    return outputType;
+}
+
+std::string
+_MtlxGraphOutputName(const UsdPrim& shaderPrim)
+{
+    return shaderPrim.GetName().GetString() + "_out";
+}
+
+void
+_AppendMtlxInputXml(
+    std::ostringstream& xml,
+    const UsdPrim& shaderPrim,
+    const UsdAttribute& attr,
+    const SdfLayerHandle& anchorLayer,
+    const UsdPrim& graphRoot = UsdPrim(),
+    const std::string& graphName = std::string(),
+    bool referenceGraphOutputs = false)
+{
+    const std::string attrName = attr.GetName().GetString();
+    if (!TfStringStartsWith(attrName, "inputs:")) {
+        return;
+    }
+
+    std::string inputName = attrName.substr(std::string("inputs:").size());
+    if (inputName == "texcoord") {
+        return;
+    }
+    if (inputName == "varname") {
+        inputName = "geomprop";
+    }
+
+    const std::string inputType = _MtlxTypeForSdfType(attr.GetTypeName());
+    std::ostringstream inputXml;
+    inputXml << "    <input name=\"" << _XmlEscape(inputName)
+        << "\" type=\"" << _XmlEscape(inputType) << "\"";
+    bool hasPayload = false;
+
+    SdfPathVector connections;
+    if (attr.GetConnections(&connections) && !connections.empty()) {
+        UsdPrim sourcePrim =
+            _ResolveConnectedPrim(shaderPrim.GetStage(), connections[0]);
+        if (sourcePrim) {
+            if (referenceGraphOutputs &&
+                graphRoot && !graphName.empty() &&
+                sourcePrim.GetParent() == graphRoot) {
+                inputXml << " nodegraph=\"" << _XmlEscape(graphName)
+                    << "\" output=\"" << _XmlEscape(_MtlxGraphOutputName(sourcePrim)) << "\"";
+            } else {
+                inputXml << " nodename=\"" << _XmlEscape(sourcePrim.GetName().GetString()) << "\"";
+            }
+            hasPayload = true;
+            const std::string outputName = connections[0].GetName();
+            if (!outputName.empty() &&
+                outputName != "outputs:out" &&
+                outputName != "out" &&
+                outputName != "outputs:result" &&
+                !(referenceGraphOutputs &&
+                  graphRoot && !graphName.empty() &&
+                  sourcePrim.GetParent() == graphRoot)) {
+                std::string cleanOutput = outputName;
+                if (TfStringStartsWith(cleanOutput, "outputs:")) {
+                    cleanOutput = cleanOutput.substr(std::string("outputs:").size());
+                }
+                inputXml << " output=\"" << _XmlEscape(cleanOutput) << "\"";
+            }
+        }
+    } else {
+        VtValue value;
+        if (attr.Get(&value) && !value.IsEmpty()) {
+            const std::string formatted = _FormatMtlxValue(value, anchorLayer);
+            if (!formatted.empty()) {
+                inputXml << " value=\"" << _XmlEscape(formatted) << "\"";
+                hasPayload = true;
+                if (inputType == "filename") {
+                    inputXml << " colorspace=\"srgb_texture\"";
+                }
+            }
+        }
+    }
+
+    if (!hasPayload) {
+        return;
+    }
+    xml << inputXml.str() << " />\n";
+}
+
+emscripten::val
+_BuildInlineMaterialXAsset(const UsdPrim& materialPrim)
+{
+    UsdPrim surfaceShader = _FindInlineMaterialXSurfaceShaderPrim(materialPrim);
+    if (!surfaceShader) {
+        return emscripten::val::undefined();
+    }
+
+    const std::string materialName =
+        "M_" + materialPrim.GetName().GetString() + "_inline";
+    const SdfLayerHandle anchorLayer = _AnchorLayerForPrim(surfaceShader);
+    std::vector<UsdPrim> shaders;
+    UsdPrim graphRoot = surfaceShader.GetParent();
+    if (!graphRoot || graphRoot == materialPrim) {
+        graphRoot = surfaceShader;
+    }
+    const std::string graphName =
+        "NG_" + materialPrim.GetName().GetString() + "_inline";
+    for (const UsdPrim& prim : UsdPrimRange(graphRoot)) {
+        if (!prim.IsA<UsdShadeShader>()) {
+            continue;
+        }
+        TfToken shaderId;
+        if (!prim.GetAttribute(TfToken("info:id")).Get(&shaderId) ||
+            shaderId == TfToken("UsdPreviewSurface")) {
+            continue;
+        }
+        shaders.push_back(prim);
+    }
+    if (shaders.empty()) {
+        shaders.push_back(surfaceShader);
+    }
+
+    std::ostringstream xml;
+    xml << "<?xml version=\"1.0\"?>\n";
+    xml << "<materialx version=\"1.39\" colorspace=\"lin_rec709\">\n";
+
+    bool hasGraphNodes = false;
+    for (const UsdPrim& shaderPrim : shaders) {
+        if (shaderPrim != surfaceShader) {
+            hasGraphNodes = true;
+            break;
+        }
+    }
+
+    if (hasGraphNodes) {
+        xml << "  <nodegraph name=\"" << _XmlEscape(graphName) << "\">\n";
+        for (const UsdPrim& shaderPrim : shaders) {
+            if (shaderPrim == surfaceShader) {
+                continue;
+            }
+            TfToken shaderId;
+            shaderPrim.GetAttribute(TfToken("info:id")).Get(&shaderId);
+            const std::string category = _MtlxCategoryForShaderId(shaderId);
+            const std::string outputType = _MtlxOutputTypeForShaderPrim(shaderPrim, category);
+            xml << "    <" << category << " name=\""
+                << _XmlEscape(shaderPrim.GetName().GetString())
+                << "\" type=\"" << _XmlEscape(outputType) << "\">\n";
+            for (const UsdAttribute& attr : shaderPrim.GetAttributes()) {
+                _AppendMtlxInputXml(
+                    xml, shaderPrim, attr, anchorLayer, graphRoot, graphName,
+                    false);
+            }
+            xml << "    </" << category << ">\n";
+        }
+        for (const UsdPrim& shaderPrim : shaders) {
+            if (shaderPrim == surfaceShader) {
+                continue;
+            }
+            TfToken shaderId;
+            shaderPrim.GetAttribute(TfToken("info:id")).Get(&shaderId);
+            const std::string category = _MtlxCategoryForShaderId(shaderId);
+            const std::string outputType = _MtlxOutputTypeForShaderPrim(shaderPrim, category);
+            xml << "    <output name=\"" << _XmlEscape(_MtlxGraphOutputName(shaderPrim))
+                << "\" type=\"" << _XmlEscape(outputType)
+                << "\" nodename=\"" << _XmlEscape(shaderPrim.GetName().GetString())
+                << "\" />\n";
+        }
+        xml << "  </nodegraph>\n";
+    }
+
+    for (const UsdPrim& shaderPrim : shaders) {
+        if (hasGraphNodes && shaderPrim != surfaceShader) {
+            continue;
+        }
+        TfToken shaderId;
+        shaderPrim.GetAttribute(TfToken("info:id")).Get(&shaderId);
+        const std::string category = _MtlxCategoryForShaderId(shaderId);
+        const std::string outputType = _MtlxOutputTypeForShaderPrim(shaderPrim, category);
+            xml << "  <" << category << " name=\""
+            << _XmlEscape(shaderPrim.GetName().GetString())
+            << "\" type=\"" << _XmlEscape(outputType) << "\">\n";
+        for (const UsdAttribute& attr : shaderPrim.GetAttributes()) {
+            _AppendMtlxInputXml(
+                xml, shaderPrim, attr, anchorLayer, graphRoot, graphName,
+                hasGraphNodes);
+        }
+        xml << "  </" << category << ">\n";
+    }
+    xml << "  <surfacematerial name=\"" << _XmlEscape(materialName)
+        << "\" type=\"material\">\n";
+    xml << "    <input name=\"surfaceshader\" type=\"surfaceshader\" nodename=\""
+        << _XmlEscape(surfaceShader.GetName().GetString()) << "\" />\n";
+    xml << "  </surfacematerial>\n";
+    xml << "</materialx>\n";
+
+    const std::string text = xml.str();
+    std::vector<unsigned char> bytes(text.begin(), text.end());
+    emscripten::val asset = emscripten::val::object();
+    asset.set("path", _InlineMaterialXPath(materialPrim));
+    asset.set("mimeType", "application/mtlx+xml");
+    asset.set("materialName", materialName);
+    asset.set("data", _BytesArray(bytes));
+    return asset;
+}
+
 emscripten::val
 _ReadMaterialXAssetFromMaterialPrim(
     const UsdPrim& materialPrim,
@@ -599,9 +1017,10 @@ _TryExtractTexture(
     return emscripten::val::undefined();
 }
 
-// Scans material prim descendants for UsdUVTexture shaders and maps each to a
-// texture slot by file-name heuristic. Used as fallback when attribute
-// connections are invisible (older USDZ files on USD 26+).
+// Scans material prim descendants for texture-producing shaders and maps each
+// to a texture slot by file-name heuristic. This supports both UsdUVTexture
+// and inline MaterialX ND_image_* nodes, giving the viewer a standard-material
+// fallback when Three's MaterialX path cannot consume a given image format.
 void
 _ExtractTexturesFromShaderDescendants(
     const UsdPrim& root,
@@ -612,8 +1031,12 @@ _ExtractTexturesFromShaderDescendants(
         if (child == root) continue;
 
         TfToken shaderId;
-        if (!child.GetAttribute(TfToken("info:id")).Get(&shaderId) ||
-            shaderId != TfToken("UsdUVTexture")) {
+        if (!child.GetAttribute(TfToken("info:id")).Get(&shaderId)) {
+            continue;
+        }
+        const std::string shaderIdText = shaderId.GetString();
+        if (shaderId != TfToken("UsdUVTexture") &&
+            !TfStringStartsWith(shaderIdText, "ND_image_")) {
             continue;
         }
 
@@ -639,8 +1062,10 @@ _ExtractTexturesFromShaderDescendants(
         // Color/diffuse detection: match "color", "diffuse", "albedo", "basecolor"
         // or presence of a valid outputs:rgb (color output) attribute
         const bool hasRgbOutput =
-            child.GetAttribute(TfToken("outputs:rgb")) &&
-            child.GetAttribute(TfToken("outputs:rgb")).IsAuthored();
+            (child.GetAttribute(TfToken("outputs:rgb")) &&
+             child.GetAttribute(TfToken("outputs:rgb")).IsAuthored()) ||
+            (child.GetAttribute(TfToken("outputs:out")) &&
+             child.GetAttribute(TfToken("outputs:out")).GetTypeName() == SdfValueTypeNames->Color3f);
         const bool nameIsColor =
             lower.find("color") != std::string::npos ||
             lower.find("diffuse") != std::string::npos ||
@@ -663,6 +1088,7 @@ _ExtractTexturesFromShaderDescendants(
                    materialValue["metallicTexture"].isUndefined()) {
             materialValue.set("metallicTexture", texture);
         } else if ((lower.find("normal") != std::string::npos ||
+                    lower.find("norm") != std::string::npos ||
                     lower.find("nrm") != std::string::npos) &&
                    materialValue["normalTexture"].isUndefined()) {
             materialValue.set("normalTexture", texture);
@@ -735,6 +1161,10 @@ _ExtractMaterial(
         materialValue.set("shaderId", shaderId.GetString());
     }
 
+    if (materialPrim) {
+        _ExtractTexturesFromShaderDescendants(materialPrim, packageRootPath, materialValue);
+    }
+
     if (shader) {
         emscripten::val materialX = _ReadMaterialXAsset(shader, packageRootPath);
         if (!materialX.isUndefined()) {
@@ -746,6 +1176,12 @@ _ExtractMaterial(
     emscripten::val materialX = _ReadMaterialXAssetFromMaterialPrim(materialPrim, packageRootPath);
     if (!materialX.isUndefined()) {
         materialValue.set("materialX", materialX);
+        return materialValue;
+    }
+
+    emscripten::val inlineMaterialX = _BuildInlineMaterialXAsset(materialPrim);
+    if (!inlineMaterialX.isUndefined()) {
+        materialValue.set("materialX", inlineMaterialX);
         return materialValue;
     }
 
@@ -811,7 +1247,7 @@ _ExtractMaterial(
         }
     }
 
-    if (!foundTexture && materialPrim) {
+    if (!foundTexture && materialPrim && materialValue["diffuseTexture"].isUndefined()) {
         _ExtractTexturesFromShaderDescendants(materialPrim, packageRootPath, materialValue);
     }
 
