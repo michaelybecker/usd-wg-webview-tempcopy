@@ -88,10 +88,6 @@ public:
         info.set("bakeTimeMs", _bakeTimeMs);
         info.set("rootLayerClean", _rootLayerCleanAfterBake);
         info.set("inspectionSessionClean", _inspectionSessionCleanAfterBake);
-        std::string sessionText;
-        if (_driverSession && _driverSession->ExportToString(&sessionText)) {
-            info.set("driverSessionText", sessionText);
-        }
         return info;
     }
 

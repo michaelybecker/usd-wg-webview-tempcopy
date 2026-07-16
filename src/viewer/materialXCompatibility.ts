@@ -5,7 +5,7 @@ export function prepareMaterialXForThree(materialXText: string): string {
 }
 
 export function materialXUsesExrImages(materialXText: string): boolean {
-  return /<image\b[\s\S]*?<input\b(?=[^>]*\bname=(["'])file\1)(?=[^>]*\bvalue=(["'])[^"']+\.exr\2)[^>]*\/>/i.test(materialXText);
+  return /<image\b[\s\S]*?<input\b(?=[^>]*\bname=(["'])file\1)(?=[^>]*\bvalue=(["'])[^"']*\.exr(?:[^"']*)\2)[^>]*\/>/i.test(materialXText);
 }
 
 export function materialShouldUseTextureFallback(material?: RenderableMaterial): boolean {
