@@ -49,7 +49,7 @@ describe("materialXUsesExrImages", () => {
   it("detects EXR image file inputs inside USDZ package paths", () => {
     const input = `<materialx>
   <image name="albedo" type="color3">
-    <input name="file" type="filename" value="/shot.usdz[assets/odie/albedo.exr]" />
+    <input name="file" type="filename" value="/package.usdz[assets/character/textures/albedo.exr]" />
   </image>
 </materialx>`;
 

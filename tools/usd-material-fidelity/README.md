@@ -44,7 +44,7 @@ architecture for the surface-material pass.
 There is a better shared-stage artifact in the sibling `material-samples`
 repository:
 
-- `/home/mbecker/dev/mtlx/material-samples/usd/materialx_shaderball/`
+- `usd/materialx_shaderball/`
 
 That package already contains:
 
