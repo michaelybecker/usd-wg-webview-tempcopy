@@ -77,7 +77,10 @@ by three.js's `MaterialXLoader`.
 
 The MaterialX UV `V` flip lives in exactly one place:
 `GeometryBuilder.applyMaterialXUvOptions`. The `materialx-tiled` regression
-case (orientation-asymmetric letter texture) gates it.
+case (orientation-asymmetric letter texture) gates it. Meshes using the
+MaterialX EXR texture fallback keep authored UVs instead, because they render
+through standard texture slots rather than Three's MaterialX image nodes; see
+`src/viewer/materialXCompatibility.ts`.
 
 ### Stage edits
 

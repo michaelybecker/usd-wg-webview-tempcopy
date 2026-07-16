@@ -123,6 +123,15 @@ app.innerHTML = `
                   <li><button class="menu-option" data-splat-detail="2">Smooth</button></li>
                 </ul>
               </li>
+              <li class="menu-submenu">
+                <button class="menu-option menu-submenu-trigger">Purpose</button>
+                <ul class="menu-dropdown menu-submenu-dropdown">
+                  <li><button class="menu-option" data-purpose-policy="defaultRender">Default + Render</button></li>
+                  <li><button class="menu-option" data-purpose-policy="render">Render</button></li>
+                  <li><button class="menu-option" data-purpose-policy="proxy">Proxy</button></li>
+                  <li><button class="menu-option" data-purpose-policy="all">All</button></li>
+                </ul>
+              </li>
               <li><button class="menu-option" id="menuMaterialXFlipV">MaterialX Flip V</button></li>
             </ul>
           </li>

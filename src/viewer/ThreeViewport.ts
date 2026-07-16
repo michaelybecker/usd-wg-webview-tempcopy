@@ -22,6 +22,7 @@ import {
 } from "three";
 import type { WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { EXRLoader } from "three/examples/jsm/loaders/EXRLoader.js";
 import type { PrimTransform, RenderableMesh, RenderableGaussianSplat, RenderableTexture, StageSummary } from "../usd/types";
 import { GaussianSplatRenderer, type SplatViewOptions } from "./GaussianSplatRenderer";
 import {
@@ -94,6 +95,7 @@ export class ThreeViewport {
       },
     });
     this.materials = new MaterialFactory(this.textures, () => this.rendererManager.isWebGpuRenderer());
+    this.materials.materialXLoader.manager.addHandler(/^data:image\/x-exr/i, new EXRLoader(this.materials.materialXLoader.manager));
     this.materials.materialXLoader.manager.addHandler(/^data:image\//, new ImageLoader(this.materials.materialXLoader.manager));
     this.lighting = new LightingRig(scene, this.defaultBackground, renderer);
     this.navigation = new NavigationController(this.ctx);

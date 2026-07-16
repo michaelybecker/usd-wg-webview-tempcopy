@@ -5,6 +5,7 @@
 
 import { BufferGeometry, Float32BufferAttribute, Vector3 } from "three";
 import type { RenderableMaterial, RenderableMesh } from "../usd/types";
+import { materialShouldUseTextureFallback } from "./materialXCompatibility";
 
 // Face-expand: for each index, copy `stride` floats from `data`. Matches the
 // reference ThreeJsRenderDelegate.updateOrder() pattern — no setIndex() needed.
@@ -107,10 +108,21 @@ export function geometryFingerprint(points: ArrayLike<number>): string {
 }
 
 export function renderableHasMaterialX(renderable: RenderableMesh): boolean {
-  if (renderable.material?.materialX) {
+  if (materialHasActiveMaterialX(renderable.material)) {
     return true;
   }
-  return (renderable.materialSubsets ?? []).some((subset) => !!subset.material?.materialX);
+  return (renderable.materialSubsets ?? []).some((subset) => materialHasActiveMaterialX(subset.material));
+}
+
+export function renderableUsesTextureFallback(renderable: RenderableMesh): boolean {
+  if (materialShouldUseTextureFallback(renderable.material)) {
+    return true;
+  }
+  return (renderable.materialSubsets ?? []).some((subset) => materialShouldUseTextureFallback(subset.material));
+}
+
+function materialHasActiveMaterialX(material?: RenderableMaterial): boolean {
+  return !!material?.materialX && !materialShouldUseTextureFallback(material);
 }
 
 // The MaterialX V-flip. This is the single place UV orientation for
@@ -121,7 +133,7 @@ export function applyMaterialXUvOptions(
   renderable: RenderableMesh,
   materialXFlipV: boolean
 ): void {
-  if (!materialXFlipV || !renderableHasMaterialX(renderable)) {
+  if (!materialXFlipV || !renderableHasMaterialX(renderable) || renderableUsesTextureFallback(renderable)) {
     return;
   }
 
@@ -188,7 +200,7 @@ export function getRenderableMaterialKey(
     : [renderable.material];
   return materials.map((material) => {
     const materialX = material?.materialX;
-    if (materialX) {
+    if (materialX && !materialShouldUseTextureFallback(material)) {
       return `mtlx:${materialXFlipV ? "flipv" : "noflipv"}:${materialX.path}:${materialX.materialName ?? ""}`;
     }
     return material?.path ?? "default";

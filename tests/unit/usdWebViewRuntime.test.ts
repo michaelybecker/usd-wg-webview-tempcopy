@@ -8,14 +8,14 @@ import {
 import type { RenderableMaterial, RenderableTexture } from "../../src/usd/types";
 
 describe("isMaterialXResourcePath", () => {
-  it("accepts browser-decodable image extensions", () => {
-    for (const path of ["a.png", "dir/b.jpg", "c.JPEG", "d.webp", "e.svg"]) {
+  it("accepts MaterialX image resource extensions", () => {
+    for (const path of ["a.png", "dir/b.jpg", "c.JPEG", "d.webp", "e.svg", "f.exr", "g.hdr"]) {
       expect(isMaterialXResourcePath(path), path).toBe(true);
     }
   });
 
-  it("rejects non-image and HDR paths", () => {
-    for (const path of ["a.usd", "b.mtlx", "c.exr", "d.hdr", "e.png.usd"]) {
+  it("rejects non-image paths", () => {
+    for (const path of ["a.usd", "b.mtlx", "e.png.usd"]) {
       expect(isMaterialXResourcePath(path), path).toBe(false);
     }
   });
@@ -29,10 +29,10 @@ describe("mimeTypeForPath", () => {
     expect(mimeTypeForPath("a.png")).toBe("image/png");
     expect(mimeTypeForPath("a.webp")).toBe("image/webp");
     expect(mimeTypeForPath("a.svg")).toBe("image/svg+xml");
+    expect(mimeTypeForPath("a.exr")).toBe("image/x-exr");
   });
 
   it("falls back to octet-stream", () => {
-    expect(mimeTypeForPath("a.exr")).toBe("application/octet-stream");
     expect(mimeTypeForPath("a")).toBe("application/octet-stream");
   });
 });

@@ -20,6 +20,7 @@ import {
   splatFidelityOptions,
   state,
   type LightingMode,
+  type PurposeChoice,
   type ToneMappingChoice,
   type UpAxisChoice,
 } from "./appState";
@@ -41,7 +42,7 @@ import {
 import { waitForUiPaint } from "./automation";
 import { onTick } from "./animation";
 import { setStatus } from "./statusBar";
-import { getEffectiveUpAxis, renderStageSummary } from "./summaries";
+import { collectRendererStats, getEffectiveUpAxis, renderStageSummary } from "./summaries";
 import { applyStageEdit } from "./stageEdits";
 
 const menuItems = Array.from(app.querySelectorAll<HTMLElement>(".menu-item"));
@@ -136,6 +137,30 @@ export async function applyMaterialXOptions(): Promise<void> {
 
   setStatus("reloading MaterialX...", true);
   await state.viewport.updateRenderablesAsync(materializedRenderables);
+  setStatus("Ready", false);
+}
+
+export async function applyPurposeOptions(): Promise<void> {
+  runtime.setPurposePolicy(state.purposePolicy);
+  for (const button of app.querySelectorAll<HTMLButtonElement>("[data-purpose-policy]")) {
+    button.classList.toggle("menu-option--checked", button.dataset.purposePolicy === state.purposePolicy);
+  }
+
+  if (!runtime.currentStagePath || state.isLoadingStage) {
+    return;
+  }
+
+  setStatus("updating purpose...", true);
+  const renderables = runtime.drawAtTime(state.animCurrent, true);
+  await state.viewport.prepareForRenderables(renderables);
+  state.viewport.updateRenderables(renderables, true);
+  if (renderables.length > 0) {
+    await state.viewport.updateRenderablesAsync(renderables);
+  }
+  const gaussianSplats = runtime.extractGaussianSplats();
+  state.viewport.renderGaussianSplats(gaussianSplats);
+  state.currentRendererStats = collectRendererStats(renderables, gaussianSplats);
+  renderStageSummary(state.currentStageSummary);
   setStatus("Ready", false);
 }
 
@@ -256,6 +281,13 @@ app.querySelector("#menuMaterialXFlipV")?.addEventListener("click", () => {
   void applyMaterialXOptions();
 });
 
+for (const button of app.querySelectorAll<HTMLButtonElement>("[data-purpose-policy]")) {
+  button.addEventListener("click", () => {
+    state.purposePolicy = button.dataset.purposePolicy as PurposeChoice;
+    void applyPurposeOptions();
+  });
+}
+
 for (const button of app.querySelectorAll<HTMLButtonElement>("[data-tone-mapping]")) {
   button.addEventListener("click", () => {
     state.toneMappingChoice = (button.dataset.toneMapping ?? "none") as ToneMappingChoice;
@@ -360,6 +392,7 @@ applyNavigationOptions();
 applyUpAxisOptions();
 applyColorSpaceOptions();
 void applyMaterialXOptions();
+void applyPurposeOptions();
 applyToneMappingOptions();
 applyLightingOptions();
 applyPayloadOpenOptions();

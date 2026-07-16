@@ -1,6 +1,6 @@
 import { LinearSRGBColorSpace, SRGBColorSpace } from "three";
 import { UsdWebViewRuntime } from "../usd/UsdWebViewRuntime";
-import type { StageSummary } from "../usd/types";
+import type { RenderPurposePolicy, StageSummary } from "../usd/types";
 import type { SceneGraphPrim } from "../usd/types";
 import { ThreeViewport, type NavigationMode, type ViewUpAxis } from "../viewer/ThreeViewport";
 import { viewportElement } from "./dom";
@@ -17,6 +17,7 @@ export type ToneMappingChoice =
   | "agx"
   | "neutral"
   | "custom";
+export type PurposeChoice = RenderPurposePolicy;
 
 export type RendererStats = {
   meshes: number;
@@ -62,6 +63,7 @@ export const state = {
   toneMappingExposure: 1,
   lightingMode: "default" as LightingMode,
   materialXFlipV: true,
+  purposePolicy: "defaultRender" as PurposeChoice,
   hdriMapVisible: true,
   hdriIntensity: 1,
   hdriMapLabel: null as string | null,

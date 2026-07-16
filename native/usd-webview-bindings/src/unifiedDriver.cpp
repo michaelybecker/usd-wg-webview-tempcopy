@@ -97,12 +97,24 @@ public:
 
     emscripten::val Draw(bool full)
     {
-        return _Draw(full, SdfPath::AbsoluteRootPath());
+        return _Draw(full, SdfPath::AbsoluteRootPath(), "defaultRender");
+    }
+
+    emscripten::val Draw(bool full, const std::string& purposePolicy)
+    {
+        return _Draw(full, SdfPath::AbsoluteRootPath(), purposePolicy);
     }
 
     emscripten::val DrawSubtree(const std::string& primPath)
     {
-        return _Draw(true, SdfPath(primPath));
+        return _Draw(true, SdfPath(primPath), "defaultRender");
+    }
+
+    emscripten::val DrawSubtree(
+        const std::string& primPath,
+        const std::string& purposePolicy)
+    {
+        return _Draw(true, SdfPath(primPath), purposePolicy);
     }
 
 private:
@@ -363,7 +375,25 @@ private:
         return true;
     }
 
-    emscripten::val _Draw(bool full, const SdfPath& rootPath)
+    bool _PurposeIsIncluded(const TfToken& purpose, const std::string& policy) const
+    {
+        if (policy == "all") {
+            return true;
+        }
+        if (policy == "proxy") {
+            return purpose == UsdGeomTokens->proxy;
+        }
+        if (policy == "render") {
+            return purpose == UsdGeomTokens->render;
+        }
+        return purpose == UsdGeomTokens->default_ ||
+            purpose == UsdGeomTokens->render;
+    }
+
+    emscripten::val _Draw(
+        bool full,
+        const SdfPath& rootPath,
+        const std::string& purposePolicy)
     {
         // Typed-array views point into these buffers; they stay valid until
         // the next Draw/DrawSubtree call, by which time the JS consumer has
@@ -401,8 +431,7 @@ private:
                 continue;
             }
             const TfToken purpose = imageable.ComputePurpose();
-            if (purpose != UsdGeomTokens->default_ &&
-                purpose != UsdGeomTokens->render) {
+            if (!_PurposeIsIncluded(purpose, purposePolicy)) {
                 continue;
             }
 
@@ -774,17 +803,23 @@ StageDriverSetTime(const std::string& stagePath, double timeCode)
 }
 
 emscripten::val
-StageDriverDraw(const std::string& stagePath, bool full)
+StageDriverDraw(
+    const std::string& stagePath,
+    bool full,
+    const std::string& purposePolicy)
 {
     WebViewStageDriver* driver = _GetUnifiedDriver(stagePath);
-    return driver ? driver->Draw(full) : emscripten::val::undefined();
+    return driver ? driver->Draw(full, purposePolicy) : emscripten::val::undefined();
 }
 
 emscripten::val
-StageDriverDrawSubtree(const std::string& stagePath, const std::string& primPath)
+StageDriverDrawSubtree(
+    const std::string& stagePath,
+    const std::string& primPath,
+    const std::string& purposePolicy)
 {
     WebViewStageDriver* driver = _GetUnifiedDriver(stagePath);
-    return driver ? driver->DrawSubtree(primPath) : emscripten::val::undefined();
+    return driver ? driver->DrawSubtree(primPath, purposePolicy) : emscripten::val::undefined();
 }
 
 emscripten::val

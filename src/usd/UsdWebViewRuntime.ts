@@ -6,6 +6,7 @@ import type {
   RenderableMaterial,
   RenderableMesh,
   RenderableTexture,
+  RenderPurposePolicy,
   RuntimeStatus,
   SceneGraphPrim,
   StageLoadRequest,
@@ -22,6 +23,7 @@ export class UsdWebViewRuntime {
   private materialXResources: RenderableTexture[] = [];
   private materialPayloadByPath = new Map<string, RenderableMaterial>();
   private hasStageDriver = false;
+  private purposePolicy: RenderPurposePolicy = "defaultRender";
   // Identity index arrays for corner-expanded meshes are constant per vertex
   // count and only ever read downstream, so cache them by length instead of
   // reallocating on every playback frame.
@@ -78,6 +80,7 @@ export class UsdWebViewRuntime {
 
   async loadStage(request: StageLoadRequest): Promise<StageLoadResult> {
     const rootFile = request.rootFile ?? request.files[0];
+    this.purposePolicy = request.purposePolicy ?? this.purposePolicy;
 
     if (!rootFile) {
       return { summary: null };
@@ -148,7 +151,11 @@ export class UsdWebViewRuntime {
       return [];
     }
     this.bindings.stageDriverSetTime?.(this.currentStagePath, timeCode);
-    const drawResult = this.bindings.stageDriverDraw(this.currentStagePath, full);
+    const drawResult = this.bindings.stageDriverDraw(
+      this.currentStagePath,
+      full,
+      this.purposePolicy
+    );
     const meshes = drawResult?.meshes ?? [];
     return this.withMaterialXResources(
       meshes.map((update) => this.meshUpdateToRenderable(update))
@@ -164,6 +171,10 @@ export class UsdWebViewRuntime {
     this.bindings.stageDriverNotifyStageEdited?.(this.currentStagePath);
     this.refreshMaterialPayloads();
     return this.drawAtTime(timeCode, true);
+  }
+
+  setPurposePolicy(policy: RenderPurposePolicy): void {
+    this.purposePolicy = policy;
   }
 
   getStageTiming(): { start: number; end: number; fps: number } | null {
@@ -313,12 +324,13 @@ export function attachMaterialXResources(
 }
 
 export function isMaterialXResourcePath(path: string): boolean {
-  return /\.(png|jpe?g|webp|svg)$/i.test(path);
+  return /\.(png|jpe?g|webp|svg|hdr|exr)$/i.test(path);
 }
 
 export function mimeTypeForPath(path: string): string {
   const lower = path.toLowerCase();
   if (lower.endsWith(".hdr")) return "image/vnd.radiance";
+  if (lower.endsWith(".exr")) return "image/x-exr";
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
   if (lower.endsWith(".png")) return "image/png";
   if (lower.endsWith(".webp")) return "image/webp";

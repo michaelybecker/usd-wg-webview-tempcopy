@@ -41,15 +41,6 @@ required.
 - **MaterialX dependency** - `three` is pinned to a `bhouston/three.js` tarball
   until upstream Three.js has matching `MaterialXLoader` support.
 
-## Planned Features
-
-| # | Feature | Notes |
-|---|---------|-------|
-| 1 | **Wireframe** - quad-based, artist-friendly topology | Reconstruct from USD `faceVertexCounts` / `faceVertexIndices` rather than showing triangulation diagonals; toggle from View menu. |
-| 2 | **Unlit view** - flat/unlit shading mode | Swap `MeshPhysicalMaterial` to `MeshBasicMaterial` while preserving color and textures; toggle from View menu. |
-| 3 | **Viewport orientation gizmo** - Unity-style 3D axis cube | Use Three.js `ViewHelper`; render in the viewport corner; click a face to snap the camera. |
-| 4 | **Performance pass** - lower per-frame allocation | Reuse JS-side buffers when counts match, add a transforms-only update path, and reduce matrix marshaling from `number[]`. |
-
 ## Architecture
 
 ```

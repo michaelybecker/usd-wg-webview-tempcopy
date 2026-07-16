@@ -9,6 +9,7 @@ import {
   getUniqueSubsetMaterials,
   normalWeldKey,
   renderableHasMaterialX,
+  renderableUsesTextureFallback,
 } from "../../src/viewer/GeometryBuilder";
 import type { RenderableMesh } from "../../src/usd/types";
 
@@ -24,6 +25,14 @@ function mesh(overrides: Partial<RenderableMesh> = {}): RenderableMesh {
 }
 
 const mtlx = { path: "m.mtlx", mimeType: "application/xml", data: new Uint8Array([1]) };
+const exrMaterialX = {
+  path: "m.mtlx",
+  mimeType: "application/xml",
+  data: new TextEncoder().encode(
+    '<materialx><image name="base" type="color3"><input name="file" type="filename" value="base.exr" /></image></materialx>'
+  ),
+};
+const texture = { path: "base.exr", mimeType: "image/x-exr", data: new Uint8Array([1]) };
 
 describe("faceExpandAttr", () => {
   it("copies stride-sized runs per index", () => {
@@ -114,6 +123,20 @@ describe("renderableHasMaterialX / material keys", () => {
     expect(getRenderableMaterialKey(renderable, false)).toBe("mtlx:noflipv:m.mtlx:M");
   });
 
+  it("treats EXR MaterialX with extracted texture slots as standard material fallback", () => {
+    const renderable = mesh({
+      material: {
+        path: "/M",
+        materialX: exrMaterialX,
+        diffuseTexture: texture,
+      },
+    });
+
+    expect(renderableHasMaterialX(renderable)).toBe(false);
+    expect(renderableUsesTextureFallback(renderable)).toBe(true);
+    expect(getRenderableMaterialKey(renderable, true)).toBe("/M");
+  });
+
   it("keys plain materials on path with default fallback", () => {
     expect(getRenderableMaterialKey(mesh(), true)).toBe("default");
     expect(getRenderableMaterialKey(mesh({ material: { path: "/M" } }), true)).toBe("/M");
@@ -148,5 +171,25 @@ describe("applyMaterialXUvOptions", () => {
     const flipOff = make();
     applyMaterialXUvOptions(flipOff, mesh({ material: { materialX: mtlx } }), false);
     expect(flipOff.getY(0)).toBeCloseTo(0.25);
+  });
+
+  it("does not flip shared mesh UVs when any subset uses EXR texture fallback", () => {
+    const uv = new Float32BufferAttribute(new Float32Array([0, 0.25, 1, 0.75]), 2);
+    const renderable = mesh({
+      material: {
+        path: "/Fallback",
+        materialX: exrMaterialX,
+        diffuseTexture: texture,
+      },
+      materialSubsets: [
+        { path: "/s", name: "s", start: 0, count: 3, material: { materialX: mtlx } },
+      ],
+    });
+
+    expect(renderableHasMaterialX(renderable)).toBe(true);
+    expect(renderableUsesTextureFallback(renderable)).toBe(true);
+    applyMaterialXUvOptions(uv, renderable, true);
+    expect(uv.getY(0)).toBeCloseTo(0.25);
+    expect(uv.getY(1)).toBeCloseTo(0.75);
   });
 });

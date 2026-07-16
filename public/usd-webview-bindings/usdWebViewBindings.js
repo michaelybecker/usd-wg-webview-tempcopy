@@ -1,5 +1,5 @@
-const _wasmBuildId = "wasm-83950026afc6"; // stamped by tools/native-build/stamp-build.mjs
-const _wrapperBuildId = "wasm-83950026afc6";
+const _wasmBuildId = "wasm-5e03d10bbcd2"; // stamped by tools/native-build/stamp-build.mjs
+const _wrapperBuildId = "wasm-5e03d10bbcd2";
 
 function normalizePath(path) {
   return `/${String(path).replace(/^\/+/, "")}`;
@@ -150,11 +150,11 @@ window.UsdWebViewBindings = {
       stageDriverSetTime(path, timeCode) {
         module.StageDriverSetTime(normalizePath(path), timeCode);
       },
-      stageDriverDraw(path, full) {
-        return module.StageDriverDraw(normalizePath(path), full);
+      stageDriverDraw(path, full, purposePolicy = "defaultRender") {
+        return module.StageDriverDraw(normalizePath(path), full, purposePolicy);
       },
-      stageDriverDrawSubtree(path, primPath) {
-        return module.StageDriverDrawSubtree(normalizePath(path), primPath);
+      stageDriverDrawSubtree(path, primPath, purposePolicy = "defaultRender") {
+        return module.StageDriverDrawSubtree(normalizePath(path), primPath, purposePolicy);
       },
       stageDriverGetTiming(path) {
         return module.StageDriverGetTiming(normalizePath(path));
