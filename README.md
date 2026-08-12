@@ -14,8 +14,8 @@ required.
   authored normals, subsets, and material bindings.
 - **Materials** - UsdPreviewSurface PBR scalars and texture slots (diffuse,
   roughness, metallic, normal, occlusion, emissive, clearcoat, clearcoat
-  roughness, opacity), plus MaterialX materials through the pinned Three.js
-  `MaterialXLoader` fork.
+  roughness, opacity), plus MaterialX materials through the official ASWF
+  MaterialX JavaScript/WASM runtime.
 - **Variant sets** - variant badges in the scene graph, dropdown selection in
   the attributes panel, and coherent geometry/material redraws after selection
   changes.
@@ -39,11 +39,9 @@ required.
 
 ## Current Constraints
 
-- **Gaussian splats + MaterialX** - SparkJS is WebGL-only. MaterialX content
-  switches the viewport to `WebGPURenderer`, so splats are not rendered in that
-  combined mode; the status bar calls this out explicitly.
-- **MaterialX dependency** - `three` is pinned to a `bhouston/three.js` tarball
-  until upstream Three.js has matching `MaterialXLoader` support.
+- **Gaussian splats + MaterialX** - SparkJS remains WebGL-only; the official
+  MaterialX raster path is WebGL2-capable and no longer forces a WebGPU
+  renderer switch.
 - **USDLux fidelity** - USDLux is translated to the light types available in
   Three.js, not path-traced. WebGL and WebGPU have different area-light
   behavior; see [Lighting](docs/lighting.md).
@@ -85,13 +83,6 @@ creates one native `WebViewStageDriver` per loaded stage. Static meshes,
 skinned meshes, animated transforms, variant changes, and payload changes all
 draw through that driver. Authored material payloads and Gaussian splats are
 side suppliers; they are not alternate mesh runtimes.
-
-## Why the bhouston three.js fork?
-
-`package.json` pins `three` to a tarball of `bhouston/three.js` because the
-viewer's MaterialX path depends on `MaterialXLoader` work that has not landed
-upstream yet. Swap back to upstream `three` once its `MaterialXLoader` reaches
-parity.
 
 ## Testing
 

@@ -10,7 +10,6 @@ import {
   Color,
   type ColorSpace,
   Group,
-  ImageLoader,
   InstancedMesh,
   Matrix4,
   Mesh,
@@ -22,7 +21,6 @@ import {
 } from "three";
 import type { WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { EXRLoader } from "three/examples/jsm/loaders/EXRLoader.js";
 import type { PrimTransform, RenderableMesh, RenderableGaussianSplat, RenderableLight, RenderableTexture, StageSummary } from "../usd/types";
 import { GaussianSplatRenderer, type SplatViewOptions } from "./GaussianSplatRenderer";
 import {
@@ -95,9 +93,7 @@ export class ThreeViewport {
         this.splatRenderer = null;
       },
     });
-    this.materials = new MaterialFactory(this.textures, () => this.rendererManager.isWebGpuRenderer());
-    this.materials.materialXLoader.manager.addHandler(/^data:image\/x-exr/i, new EXRLoader(this.materials.materialXLoader.manager));
-    this.materials.materialXLoader.manager.addHandler(/^data:image\//, new ImageLoader(this.materials.materialXLoader.manager));
+    this.materials = new MaterialFactory(this.textures);
     this.lighting = new LightingRig(scene, this.defaultBackground, renderer);
     this.navigation = new NavigationController(this.ctx);
     this.picking = new PickingController(this.ctx, this.meshByPath, this.pathByMesh);
@@ -211,7 +207,7 @@ export class ThreeViewport {
 
   async prepareForRenderables(renderables: RenderableMesh[]): Promise<void> {
     if (renderables.some((renderable) => renderableHasMaterialX(renderable))) {
-      await this.rendererManager.ensureWebGpuRenderer();
+      await this.materials.prepareMaterialXMaterials(renderables);
     }
   }
 
@@ -390,7 +386,7 @@ export class ThreeViewport {
   async updateRenderablesAsync(renderables: RenderableMesh[]): Promise<void> {
     const textureLoads: Promise<void>[] = [];
     if (renderables.some((renderable) => renderableHasMaterialX(renderable))) {
-      await this.rendererManager.ensureWebGpuRenderer();
+      await this.materials.prepareMaterialXMaterials(renderables);
     }
     for (const renderable of renderables) {
       const existing = this.meshByPath.get(renderable.path);

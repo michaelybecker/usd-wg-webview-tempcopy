@@ -69,9 +69,8 @@ npm run dev
 
 Open the URL printed by Vite. The runtime panel should report **ready** once the WASM module loads.
 
-The repo includes a checked-in `.npmrc` so plain `npm install` works with the
-forked Three.js MaterialX tarball. No extra npm flags should be needed on a
-fresh clone.
+Plain `npm install` is enough for the frontend dependencies, including
+mainline Three.js and the checked-in official MaterialX JavaScript/WASM runtime.
 
 ## Rebuilding after C++ changes
 
