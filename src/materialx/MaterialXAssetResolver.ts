@@ -5,26 +5,20 @@ export class MaterialXAssetResolver {
   private readonly resourceUrls = new Map<string, string>();
 
   resolve(uri: string, materialXPath: string, resources: RenderableTexture[]): MaterialXResolvedResource | null {
-    const normalizedUri = normalizeAssetPath(uri);
     const basePath = normalizeAssetPath(materialXPath).split("/").slice(0, -1).join("/");
-    const candidates = assetPathCandidates(normalizedUri, basePath);
-
-    const resource = resources.find((candidate) => {
-      const path = normalizeAssetPath(candidate.path);
-      for (const resourceCandidate of assetPathCandidates(path)) {
-        if (candidates.has(resourceCandidate)) {
-          return true;
-        }
-      }
-      return false;
-    });
+    const exactCandidates = exactAssetPathCandidates(uri, basePath);
+    const exactResource = resources.find((candidate) =>
+      [...exactAssetPathCandidates(candidate.path)].some((path) => exactCandidates.has(path))
+    );
+    const resource = exactResource ?? findUnambiguousBasenameMatch(resources, exactCandidates);
     if (!resource?.data?.length) {
       return null;
     }
 
     let url = this.resourceUrls.get(resource.path);
     if (!url) {
-      url = URL.createObjectURL(new Blob([resource.data as BlobPart], { type: resource.mimeType }));
+      const bytes = resource.data instanceof Uint8Array ? resource.data : new Uint8Array(resource.data);
+      url = objectUrlFromBytes(bytes, resource.mimeType);
       this.resourceUrls.set(resource.path, url);
     }
     return { ...resource, url };
@@ -36,17 +30,39 @@ export class MaterialXAssetResolver {
 
   revokeUrls(): void {
     for (const url of this.resourceUrls.values()) {
-      URL.revokeObjectURL(url);
+      if (url.startsWith("blob:")) {
+        URL.revokeObjectURL(url);
+      }
     }
     this.resourceUrls.clear();
   }
 }
 
+function objectUrlFromBytes(bytes: Uint8Array, mimeType: string): string {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return URL.createObjectURL(new Blob([buffer], { type: mimeType }));
+}
+
 export function normalizeAssetPath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+  const normalized = path.replace(/\\/g, "/").replace(/^\/+/, "");
+  const packageMember = extractPackageMemberPath(normalized);
+  if (packageMember) {
+    const prefix = normalized.slice(0, normalized.indexOf("["));
+    return `${normalizePathSegments(prefix)}[${normalizePathSegments(packageMember)}]`;
+  }
+  return normalizePathSegments(normalized);
 }
 
 export function assetPathCandidates(path: string, basePath = ""): Set<string> {
+  const candidates = exactAssetPathCandidates(path, basePath);
+  for (const candidate of [...candidates]) {
+    candidates.add(candidate.split("/").pop() ?? candidate);
+  }
+  return candidates;
+}
+
+function exactAssetPathCandidates(path: string, basePath = ""): Set<string> {
   const candidates = new Set<string>();
   const add = (candidate: string) => {
     const normalized = normalizeAssetPath(candidate);
@@ -54,12 +70,10 @@ export function assetPathCandidates(path: string, basePath = ""): Set<string> {
       return;
     }
     candidates.add(normalized);
-    candidates.add(normalized.split("/").pop() ?? normalized);
 
     const packageMember = extractPackageMemberPath(normalized);
     if (packageMember && packageMember !== normalized) {
       candidates.add(packageMember);
-      candidates.add(packageMember.split("/").pop() ?? packageMember);
     }
   };
 
@@ -67,8 +81,35 @@ export function assetPathCandidates(path: string, basePath = ""): Set<string> {
   if (basePath) {
     add(`${basePath}/${path}`);
   }
-
   return candidates;
+}
+
+function findUnambiguousBasenameMatch(
+  resources: RenderableTexture[],
+  exactCandidates: Set<string>
+): RenderableTexture | null {
+  const basenames = new Set(
+    [...exactCandidates].map((candidate) => candidate.split("/").pop() ?? candidate)
+  );
+  const matches = resources.filter((resource) =>
+    [...exactAssetPathCandidates(resource.path)].some((path) => basenames.has(path.split("/").pop() ?? path))
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function normalizePathSegments(path: string): string {
+  const segments: string[] = [];
+  for (const segment of path.split("/")) {
+    if (!segment || segment === ".") {
+      continue;
+    }
+    if (segment === "..") {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return segments.join("/");
 }
 
 function extractPackageMemberPath(path: string): string | null {

@@ -11,13 +11,18 @@ import {
   type ColorSpace,
   Group,
   InstancedMesh,
+  Matrix3,
   Matrix4,
+  type Material,
   Mesh,
   PerspectiveCamera,
   Scene,
+  Texture,
   type ToneMapping,
   Vector3,
   WebGLRenderer,
+  NoToneMapping,
+  SRGBColorSpace,
 } from "three";
 import type { WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -35,30 +40,77 @@ import {
   updateGeometryPositions,
 } from "./GeometryBuilder";
 import { Float32BufferAttribute } from "three";
-import { MaterialFactory } from "./MaterialFactory";
+import { MaterialFactory, type MaterialXDebugOutputMode } from "./MaterialFactory";
 import { TextureCache } from "./TextureCache";
 import { LightingRig } from "./Lighting";
-import { NavigationController, type NavigationMode } from "./Navigation";
+import { NavigationController, type CameraPose, type NavigationMode } from "./Navigation";
 import { PickingController } from "./Picking";
 import { RendererManager } from "./RendererManager";
 import type { ViewportContext } from "./viewerContext";
 
 export type { NavigationMode } from "./Navigation";
 export type ViewUpAxis = "y" | "z";
+export type ReferenceCaptureOptions = {
+  camera?: CameraPose;
+  environmentRotationDegrees?: number;
+  hdriMapVisible?: boolean;
+  toneMapping?: "none";
+  outputColorSpace?: "srgb";
+  lightGizmosVisible?: boolean;
+  axesVisible?: boolean;
+  materialXFlipV?: boolean;
+  normalizeStageToYUp?: boolean;
+  materialXDebugOutput?: MaterialXDebugOutputMode;
+  modelNormalization?:
+    | boolean
+    | {
+        enabled?: boolean;
+        targetRadius?: number;
+        target?: [number, number, number];
+      };
+};
+
+export type ViewportDebugMaterialInfo = {
+  mesh: string;
+  uvCount: number | null;
+  positionCount: number | null;
+  materials: Array<{
+    type: string;
+    materialX: boolean;
+    materialXHost?: string;
+    materialXDebugOutput?: string;
+    materialXFragmentHasGraphColorOutput?: boolean;
+    materialXTextureResolutions?: unknown;
+    hasMap?: boolean;
+    mapName?: string;
+    mapImageWidth?: number | null;
+    mapImageHeight?: number | null;
+  }>;
+};
 
 const IDENTITY_MATRIX = new Matrix4();
+const Z_UP_TO_Y_UP = new Matrix4().makeRotationX(-Math.PI / 2);
+const Y_UP_TO_Z_UP = new Matrix4().makeRotationX(Math.PI / 2);
 
 export class ThreeViewport {
   private readonly defaultBackground = new Color(0x181d21);
   private readonly ctx: ViewportContext;
   private readonly stageRoot = new Group();
+  private readonly axesHelper = new AxesHelper(1.25);
   private readonly meshByPath = new Map<string, Mesh>();
   private readonly pathByMesh = new Map<Mesh, string>();
   private splatRenderer: GaussianSplatRenderer | null;
   private animationFrame = 0;
+  private readonly manualRenderMode =
+    new URLSearchParams(window.location.search).get("manualRender") === "1";
+  private renderQueue: Promise<void> = Promise.resolve();
   private readonly resizeObserver: ResizeObserver;
   private viewUpAxis: ViewUpAxis = "y";
   private materialXFlipV = true;
+  private normalizeStageToYUp = false;
+  private referenceModelNormalization:
+    | Exclude<ReferenceCaptureOptions["modelNormalization"], boolean>
+    | null = null;
 
   private readonly rendererManager: RendererManager;
   private readonly textures = new TextureCache();
@@ -93,14 +145,14 @@ export class ThreeViewport {
         this.splatRenderer = null;
       },
     });
-    this.materials = new MaterialFactory(this.textures);
+    this.materials = new MaterialFactory(this.textures, () => this.rendererManager.isWebGpuRenderer());
     this.lighting = new LightingRig(scene, this.defaultBackground, renderer);
     this.navigation = new NavigationController(this.ctx);
     this.picking = new PickingController(this.ctx, this.meshByPath, this.pathByMesh);
 
     this.stageRoot.name = "USD Stage Root";
     scene.add(this.stageRoot);
-    scene.add(new AxesHelper(1.25));
+    scene.add(this.axesHelper);
 
     this.splatRenderer = new GaussianSplatRenderer(renderer, scene);
 
@@ -118,6 +170,11 @@ export class ThreeViewport {
   }
 
   start(onTick?: () => void): void {
+    if (this.manualRenderMode) {
+      void this.renderForCapture();
+      return;
+    }
+
     const render = () => {
       onTick?.();
       this.navigation.tickGameNavigation();
@@ -132,6 +189,35 @@ export class ThreeViewport {
     };
 
     render();
+  }
+
+  renderForCapture(passes = 3): Promise<void> {
+    this.renderQueue = this.renderQueue.then(async () => {
+      this.ctx.controls.update();
+      if (this.rendererManager.isWebGpuRenderer()) {
+        const renderer = this.ctx.renderer as WebGPURenderer & {
+          compileAsync?: (object: Group, camera: PerspectiveCamera, scene: Scene) => Promise<void>;
+          renderAsync?: (scene: Scene, camera: PerspectiveCamera) => Promise<void>;
+        };
+        if (renderer.compileAsync) {
+          await renderer.compileAsync(this.stageRoot, this.ctx.camera, this.ctx.scene);
+        }
+        for (let pass = 0; pass < passes; pass += 1) {
+          if (renderer.renderAsync) {
+            await renderer.renderAsync(this.ctx.scene, this.ctx.camera);
+          } else {
+            renderer.render(this.ctx.scene, this.ctx.camera);
+          }
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        }
+      } else {
+        for (let pass = 0; pass < passes; pass += 1) {
+          this.ctx.renderer.render(this.ctx.scene, this.ctx.camera);
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        }
+      }
+    });
+    return this.renderQueue;
   }
 
   dispose(): void {
@@ -161,7 +247,8 @@ export class ThreeViewport {
 
     this.clearStage();
 
-    for (const renderable of renderables) {
+    for (const sourceRenderable of renderables) {
+      const renderable = this.toRenderCoordinateSpace(sourceRenderable);
       const mesh = this.createSceneMesh(renderable);
       mesh.name = renderable.name || renderable.path;
       mesh.userData.materialKey = getRenderableMaterialKey(renderable, this.materialXFlipV);
@@ -191,10 +278,15 @@ export class ThreeViewport {
 
   setStageLights(lights: RenderableLight[]): void {
     this.lighting.setStageLights(lights);
+    this.syncMaterialXDefaultLight();
   }
 
   setLightGizmosVisible(visible: boolean): void {
     this.lighting.setLightGizmosVisible(visible);
+  }
+
+  setAxesVisible(visible: boolean): void {
+    this.axesHelper.visible = visible;
   }
 
   isExperimentalMaterialXMode(): boolean {
@@ -205,8 +297,13 @@ export class ThreeViewport {
     this.materialXFlipV = enabled;
   }
 
+  setMaterialXDebugOutputMode(mode: MaterialXDebugOutputMode): boolean {
+    return this.materials.setMaterialXDebugOutputMode(mode);
+  }
+
   async prepareForRenderables(renderables: RenderableMesh[]): Promise<void> {
     if (renderables.some((renderable) => renderableHasMaterialX(renderable))) {
+      await this.rendererManager.ensureWebGpuRenderer();
       await this.materials.prepareMaterialXMaterials(renderables);
     }
   }
@@ -237,6 +334,43 @@ export class ThreeViewport {
     return this.viewUpAxis;
   }
 
+  getDebugMaterialInfo(): ViewportDebugMaterialInfo[] {
+    const info: ViewportDebugMaterialInfo[] = [];
+    this.stageRoot.traverse((object) => {
+      if (!(object instanceof Mesh)) {
+        return;
+      }
+      const materials = Array.isArray(object.material)
+        ? object.material
+        : [object.material];
+      info.push({
+        mesh: object.name,
+        uvCount: object.geometry.attributes.uv?.count ?? null,
+        positionCount: object.geometry.attributes.position?.count ?? null,
+        materials: materials.map((material) => {
+          const record = material as Material & {
+            map?: Texture | null;
+            type?: string;
+            fragmentShader?: string;
+          };
+          return {
+            type: record.type ?? material.constructor.name,
+            materialX: material.userData.webviewMaterialX === true,
+            materialXHost: material.userData.webviewMaterialXHost,
+            materialXDebugOutput: material.userData.webviewMaterialXDebugOutput,
+            materialXFragmentHasGraphColorOutput: record.fragmentShader?.includes("out1 = vec4(final_color_out, 1.0);"),
+            materialXTextureResolutions: material.userData.webviewMaterialXTextureResolutions,
+            hasMap: !!record.map,
+            mapName: record.map?.name,
+            mapImageWidth: record.map?.image?.width ?? null,
+            mapImageHeight: record.map?.image?.height ?? null,
+          };
+        }),
+      });
+    });
+    return info;
+  }
+
   setOutputColorSpace(colorSpace: ColorSpace): void {
     this.rendererManager.setOutputColorSpace(colorSpace);
   }
@@ -249,16 +383,60 @@ export class ThreeViewport {
     this.rendererManager.setToneMappingExposure(exposure);
   }
 
-  loadHdriMap(file: File): Promise<void> {
-    return this.lighting.loadHdriMap(file);
+  applyReferenceCaptureOptions(options: ReferenceCaptureOptions): boolean {
+    let coordinateSpaceChanged = false;
+    if (options.outputColorSpace === "srgb") {
+      this.setOutputColorSpace(SRGBColorSpace);
+    }
+    if (options.toneMapping === "none") {
+      this.setToneMapping(NoToneMapping);
+      this.setToneMappingExposure(1);
+    }
+    if (options.environmentRotationDegrees !== undefined) {
+      this.setHdriRotation(options.environmentRotationDegrees);
+    }
+    if (options.hdriMapVisible !== undefined) {
+      this.setHdriMapVisible(options.hdriMapVisible);
+    }
+    if (options.lightGizmosVisible !== undefined) {
+      this.setLightGizmosVisible(options.lightGizmosVisible);
+    }
+    if (options.axesVisible !== undefined) {
+      this.setAxesVisible(options.axesVisible);
+    }
+    if (options.materialXFlipV !== undefined) {
+      this.setMaterialXFlipV(options.materialXFlipV);
+    }
+    if (options.normalizeStageToYUp !== undefined &&
+        options.normalizeStageToYUp !== this.normalizeStageToYUp) {
+      this.normalizeStageToYUp = options.normalizeStageToYUp;
+      this.applyViewUpAxis();
+      coordinateSpaceChanged = true;
+    }
+    if (options.modelNormalization !== undefined) {
+      this.setReferenceModelNormalization(options.modelNormalization);
+    }
+    if (options.camera) {
+      this.navigation.setCameraPose(options.camera);
+    }
+    return coordinateSpaceChanged;
   }
 
-  loadHdriAsset(asset: RenderableTexture, label?: string): Promise<void> {
-    return this.lighting.loadHdriAsset(asset, label);
+  loadHdriMap(file: File): Promise<void> {
+    return this.lighting.loadHdriMap(file).then(() => {
+      this.syncMaterialXDefaultLight();
+    });
+  }
+
+  loadHdriAsset(asset: RenderableTexture, label?: string, materialXIrradianceAsset?: RenderableTexture): Promise<void> {
+    return this.lighting.loadHdriAsset(asset, label, materialXIrradianceAsset).then(() => {
+      this.syncMaterialXDefaultLight();
+    });
   }
 
   useDefaultLighting(): void {
     this.lighting.useDefaultLighting();
+    this.syncMaterialXDefaultLight();
   }
 
   setHdriMapVisible(visible: boolean): void {
@@ -325,7 +503,8 @@ export class ThreeViewport {
         this.picking.forgetMesh(mesh);
       }
     }
-    for (const renderable of renderables) {
+    for (const sourceRenderable of renderables) {
+      const renderable = this.toRenderCoordinateSpace(sourceRenderable);
       const existing = this.meshByPath.get(renderable.path);
       if (existing) {
         if (!this.sceneMeshMatchesRenderable(existing, renderable)) {
@@ -386,9 +565,11 @@ export class ThreeViewport {
   async updateRenderablesAsync(renderables: RenderableMesh[]): Promise<void> {
     const textureLoads: Promise<void>[] = [];
     if (renderables.some((renderable) => renderableHasMaterialX(renderable))) {
+      await this.rendererManager.ensureWebGpuRenderer();
       await this.materials.prepareMaterialXMaterials(renderables);
     }
-    for (const renderable of renderables) {
+    for (const sourceRenderable of renderables) {
+      const renderable = this.toRenderCoordinateSpace(sourceRenderable);
       const existing = this.meshByPath.get(renderable.path);
       if (!existing) continue;
 
@@ -433,8 +614,7 @@ export class ThreeViewport {
 
   private applyRenderableTransform(mesh: Mesh, renderable: RenderableMesh): void {
     if (renderable.matrix.length === 16) {
-      mesh.matrix.set(...(renderable.matrix as Parameters<typeof mesh.matrix.set>));
-      mesh.matrix.transpose();
+      mesh.matrix.copy(this.toRenderCoordinateMatrix(renderable.matrix));
       mesh.matrixAutoUpdate = false;
     } else {
       mesh.matrix.identity();
@@ -449,10 +629,7 @@ export class ThreeViewport {
     for (let index = 0; index < instanceMatrices.length; ++index) {
       const values = instanceMatrices[index];
       if (values?.length === 16) {
-        const matrix = new Matrix4();
-        matrix.set(...(values as Parameters<typeof matrix.set>));
-        matrix.transpose();
-        mesh.setMatrixAt(index, matrix);
+        mesh.setMatrixAt(index, this.toRenderCoordinateMatrix(values));
       } else {
         mesh.setMatrixAt(index, IDENTITY_MATRIX);
       }
@@ -480,7 +657,10 @@ export class ThreeViewport {
     this.textures.revokeTextureUrls();
     this.materials.clearStageState();
     this.lighting.clearStageLights();
+    this.syncMaterialXDefaultLight();
     this.stageRoot.rotation.set(0, 0, 0);
+    this.stageRoot.position.set(0, 0, 0);
+    this.stageRoot.scale.setScalar(1);
     this.stageRoot.traverse((object) => {
       if (object instanceof Mesh) {
         object.geometry.dispose();
@@ -497,9 +677,101 @@ export class ThreeViewport {
   }
 
   private applyViewUpAxis(): void {
-    this.stageRoot.rotation.set(this.viewUpAxis === "z" ? -Math.PI / 2 : 0, 0, 0);
+    this.stageRoot.rotation.set(
+      this.viewUpAxis === "z" && !this.normalizeStageToYUp ? -Math.PI / 2 : 0,
+      0,
+      0
+    );
     this.lighting.setViewUpAxis(this.viewUpAxis);
     this.splatRenderer?.setViewUpAxis(this.viewUpAxis);
+    this.applyReferenceModelNormalization();
+  }
+
+  private toRenderCoordinateSpace(renderable: RenderableMesh): RenderableMesh {
+    if (!this.normalizeStageToYUp || this.viewUpAxis !== "z") {
+      return renderable;
+    }
+
+    const normalized = {
+      ...renderable,
+      points: rotateZUpVectorsToYUp(renderable.points),
+      normals: renderable.normals
+        ? rotateZUpVectorsToYUp(renderable.normals)
+        : undefined,
+    };
+    return this.bakeRenderableTransformForReferenceCapture(normalized);
+  }
+
+  private bakeRenderableTransformForReferenceCapture(renderable: RenderableMesh): RenderableMesh {
+    if (renderable.instanceMatrices?.length || renderable.matrix.length !== 16) {
+      return renderable;
+    }
+
+    const matrix = this.toRenderCoordinateMatrix(renderable.matrix);
+    return {
+      ...renderable,
+      points: transformPoints(renderable.points, matrix),
+      normals: renderable.normals
+        ? transformNormals(renderable.normals, matrix)
+        : undefined,
+      matrix: [],
+    };
+  }
+
+  private toRenderCoordinateMatrix(values: number[]): Matrix4 {
+    const matrix = new Matrix4();
+    matrix.set(...(values as Parameters<typeof matrix.set>));
+    matrix.transpose();
+    if (this.normalizeStageToYUp && this.viewUpAxis === "z") {
+      matrix.premultiply(Z_UP_TO_Y_UP).multiply(Y_UP_TO_Z_UP);
+    }
+    return matrix;
+  }
+
+  private setReferenceModelNormalization(options: ReferenceCaptureOptions["modelNormalization"]): void {
+    if (!options || (typeof options === "object" && options.enabled === false)) {
+      this.referenceModelNormalization = null;
+      this.stageRoot.position.set(0, 0, 0);
+      this.stageRoot.scale.setScalar(1);
+      return;
+    }
+
+    this.referenceModelNormalization =
+      typeof options === "object" ? options : {};
+    this.applyReferenceModelNormalization();
+  }
+
+  private applyReferenceModelNormalization(): void {
+    if (!this.referenceModelNormalization || this.stageRoot.children.length === 0) {
+      return;
+    }
+
+    this.stageRoot.position.set(0, 0, 0);
+    this.stageRoot.scale.setScalar(1);
+    this.stageRoot.updateMatrixWorld(true);
+
+    const box = new Box3().setFromObject(this.stageRoot);
+    if (box.isEmpty()) {
+      return;
+    }
+
+    const size = box.getSize(new Vector3());
+    const radius = size.length() * 0.5;
+    const targetRadius = this.referenceModelNormalization.targetRadius ?? 2;
+    if (!Number.isFinite(radius) || radius <= 0 || targetRadius <= 0) {
+      return;
+    }
+
+    const target = new Vector3().fromArray(this.referenceModelNormalization.target ?? [0, 0, 0]);
+    const center = box.getCenter(new Vector3());
+    const scale = targetRadius / radius;
+    this.stageRoot.scale.setScalar(scale);
+    this.stageRoot.position.copy(target).sub(center.multiplyScalar(scale));
+    this.stageRoot.updateMatrixWorld(true);
+  }
+
+  private syncMaterialXDefaultLight(): void {
+    // Three's MaterialXLoader renders through the active Three lighting stack.
   }
 
   pickPrim(clientX: number, clientY: number): string | null {
@@ -564,4 +836,41 @@ export class ThreeViewport {
     if (box.isEmpty()) return;
     this.navigation.animateToBox(box, false);
   }
+}
+
+function rotateZUpVectorsToYUp(values: ArrayLike<number>): Float32Array {
+  const transformed = new Float32Array(values.length);
+  for (let index = 0; index + 2 < values.length; index += 3) {
+    transformed[index] = values[index];
+    transformed[index + 1] = values[index + 2];
+    transformed[index + 2] = -values[index + 1];
+  }
+  return transformed;
+}
+
+function transformPoints(values: ArrayLike<number>, matrix: Matrix4): Float32Array {
+  const transformed = new Float32Array(values.length);
+  const point = new Vector3();
+  for (let index = 0; index + 2 < values.length; index += 3) {
+    point.set(values[index], values[index + 1], values[index + 2]).applyMatrix4(matrix);
+    transformed[index] = point.x;
+    transformed[index + 1] = point.y;
+    transformed[index + 2] = point.z;
+  }
+  return transformed;
+}
+
+function transformNormals(values: ArrayLike<number>, matrix: Matrix4): Float32Array {
+  const transformed = new Float32Array(values.length);
+  const normalMatrix = new Matrix3().getNormalMatrix(matrix);
+  const normal = new Vector3();
+  for (let index = 0; index + 2 < values.length; index += 3) {
+    normal.set(values[index], values[index + 1], values[index + 2])
+      .applyMatrix3(normalMatrix)
+      .normalize();
+    transformed[index] = normal.x;
+    transformed[index + 1] = normal.y;
+    transformed[index + 2] = normal.z;
+  }
+  return transformed;
 }

@@ -128,7 +128,7 @@ export class MaterialXRuntime {
     if (this.mx.HwSpecularEnvironmentMethod?.SPECULAR_ENVIRONMENT_PREFILTER !== undefined) {
       options.hwSpecularEnvironmentMethod = this.mx.HwSpecularEnvironmentMethod.SPECULAR_ENVIRONMENT_PREFILTER;
     }
-    options.hwSrgbEncodeOutput = false;
+    options.hwSrgbEncodeOutput = true;
     options.hwMaxActiveLightSources = 4;
   }
 

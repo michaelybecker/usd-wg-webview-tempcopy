@@ -1,5 +1,5 @@
 // Material creation and update for renderable meshes: MeshPhysicalMaterial
-// mapping from UsdPreviewSurface data, MaterialX parsing/compilation,
+// mapping from UsdPreviewSurface data, MaterialX parsing through Three,
 // material-key change detection, and MaterialX resource resolution.
 
 import {
@@ -9,9 +9,9 @@ import {
   Mesh,
   MeshPhysicalMaterial,
 } from "three";
+import { MaterialXLoader } from "three/examples/jsm/loaders/MaterialXLoader.js";
 import type { RenderableMaterial, RenderableMesh } from "../usd/types";
 import { MaterialXAssetResolver } from "../materialx/MaterialXAssetResolver";
-import { MaterialXMaterialAdapter } from "../materialx/MaterialXMaterialAdapter";
 import {
   getRenderableMaterialKey,
   getRenderableMaterialXEntries,
@@ -19,18 +19,22 @@ import {
   renderableHasMaterialX,
 } from "./GeometryBuilder";
 import type { TextureCache } from "./TextureCache";
-import { materialShouldUseTextureFallback } from "./materialXCompatibility";
+import { materialShouldUseTextureFallback, prepareMaterialXForThree } from "./materialXCompatibility";
 
 const TEXT_DECODER = new TextDecoder();
+export type MaterialXDebugOutputMode = "none" | "graphColor";
 
 export class MaterialFactory {
-  private readonly officialMaterialXResolver = new MaterialXAssetResolver();
-  private readonly officialMaterialXAdapter = new MaterialXMaterialAdapter(this.officialMaterialXResolver);
-  private readonly officialMaterialXMaterials = new Map<string, Material | null>();
+  readonly materialXLoader = new MaterialXLoader();
+  private readonly materialXResolver = new MaterialXAssetResolver();
+  private readonly materialXMaterials = new Map<string, Material | null>();
   private readonly materialXTangentWarnings = new Set<string>();
   private experimentalMaterialXMode = false;
 
-  constructor(private readonly textures: TextureCache) {}
+  constructor(
+    private readonly textures: TextureCache,
+    private readonly isWebGpuRenderer: () => boolean
+  ) {}
 
   isExperimentalMaterialXMode(): boolean {
     return this.experimentalMaterialXMode;
@@ -39,33 +43,36 @@ export class MaterialFactory {
   // Reset per-stage state (warnings, resource URLs, MaterialX mode flag).
   clearStageState(): void {
     this.materialXTangentWarnings.clear();
-    this.officialMaterialXMaterials.clear();
-    this.officialMaterialXResolver.revokeUrls();
+    this.materialXMaterials.clear();
+    this.materialXResolver.revokeUrls();
     this.experimentalMaterialXMode = false;
   }
 
   dispose(): void {
-    this.officialMaterialXResolver.revokeUrls();
+    this.materialXLoader.dispose();
+    this.materialXResolver.revokeUrls();
+  }
+
+  setMaterialXDebugOutputMode(_mode: MaterialXDebugOutputMode): boolean {
+    return false;
   }
 
   async prepareMaterialXMaterials(renderables: RenderableMesh[]): Promise<void> {
     const entries = renderables.flatMap((renderable) => getRenderableMaterialXEntries(renderable));
-    await Promise.all(entries.map(async (materialX) => {
+    for (const materialX of entries) {
       const key = materialXCacheKey(materialX.path, materialX.materialName);
-      if (this.officialMaterialXMaterials.has(key)) {
-        return;
-      }
+      if (this.materialXMaterials.has(key)) continue;
       try {
-        this.officialMaterialXMaterials.set(key, await this.officialMaterialXAdapter.createMaterial(materialX));
+        this.materialXMaterials.set(key, this.createThreeMaterialXMaterial(materialX));
       } catch (error) {
-        console.warn("[USD WebView] Failed to create official MaterialX material", {
+        console.warn("[USD WebView] Failed to create Three MaterialX material", {
           path: materialX.path,
           materialName: materialX.materialName,
           error,
         });
-        this.officialMaterialXMaterials.set(key, null);
+        this.materialXMaterials.set(key, null);
       }
-    }));
+    }
   }
 
   createRenderableMaterials(renderable: RenderableMesh): Material | Material[] {
@@ -148,12 +155,73 @@ export class MaterialFactory {
     if (materialShouldUseTextureFallback(rmat)) {
       return null;
     }
-    const material = this.officialMaterialXMaterials.get(materialXCacheKey(materialX.path, materialX.materialName));
+    const material = this.materialXMaterials.get(materialXCacheKey(materialX.path, materialX.materialName));
     if (material) {
       this.experimentalMaterialXMode = true;
       return material.clone();
     }
     return null;
+  }
+
+  private createThreeMaterialXMaterial(materialX: NonNullable<RenderableMaterial["materialX"]>): Material | null {
+    if (!materialX.data?.length) {
+      return null;
+    }
+    if (!this.isWebGpuRenderer()) {
+      console.warn("[USD WebView] Skipping MaterialX material because WebGPU renderer is unavailable", {
+        path: materialX.path,
+        materialName: materialX.materialName,
+      });
+      return null;
+    }
+
+    const originalMaterialXText = TEXT_DECODER.decode(materialX.data);
+    const materialXText = prepareMaterialXForThree(originalMaterialXText);
+    const textureResolutions: Array<{
+      uri: string;
+      resourceCount: number;
+      resolved: boolean;
+      resolvedPath?: string;
+      byteLength?: number;
+      bytePrefix?: number[];
+    }> = [];
+    const result = this.materialXLoader.parse(materialXText, {
+      materialName: materialX.materialName,
+      archiveResolver: (uri: string) => {
+        const resolved = this.materialXResolver.resolve(uri, materialX.path, materialX.resources ?? []);
+        textureResolutions.push({
+          uri,
+          resourceCount: materialX.resources?.length ?? 0,
+          resolved: !!resolved,
+          resolvedPath: resolved?.path,
+          byteLength: resolved?.data?.length,
+          bytePrefix: resolved?.data ? Array.from(resolved.data.slice(0, 8)) : undefined,
+        });
+        return resolved?.url ?? null;
+      },
+      path: "",
+      uvSpace: "top-left",
+      issuePolicy: "warn",
+    });
+    materialX.report = result.report;
+    const material = materialX.materialName
+      ? result.materials[materialX.materialName]
+      : Object.values(result.materials)[0];
+    if (!material) {
+      console.warn("[USD WebView] MaterialX loader did not produce a usable material", {
+        path: materialX.path,
+        materialName: materialX.materialName,
+        availableMaterials: Object.keys(result.materials),
+        report: result.report,
+      });
+      return null;
+    }
+
+    material.userData.webviewMaterialX = true;
+    material.userData.webviewMaterialXRuntime = "three";
+    material.userData.webviewMaterialXHost = "three-materialx-loader";
+    material.userData.webviewMaterialXTextureResolutions = textureResolutions;
+    return material;
   }
 
   meshHasMaterialXMaterial(mesh: Mesh): boolean {
@@ -249,6 +317,9 @@ export class MaterialFactory {
   }
 }
 
-function materialXCacheKey(path: string, materialName?: string): string {
+function materialXCacheKey(
+  path: string,
+  materialName?: string
+): string {
   return `${path}:${materialName ?? ""}`;
 }

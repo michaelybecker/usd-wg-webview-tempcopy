@@ -64,6 +64,7 @@ export class LightingRig {
   private readonly defaultHemisphereIntensity = 1.25;
   private readonly defaultEnvironmentIntensity = 0.7;
   private hdriTexture: Texture | null = null;
+  private materialXIrradianceTexture: Texture | null = null;
   private hdriMapVisible = true;
   private hdriIntensity = 1;
   private hdriRotation = 0;
@@ -111,18 +112,27 @@ export class LightingRig {
     }
   }
 
-  async loadHdriAsset(asset: RenderableTexture, label?: string): Promise<void> {
+  async loadHdriAsset(
+    asset: RenderableTexture,
+    label?: string,
+    materialXIrradianceAsset?: RenderableTexture
+  ): Promise<void> {
     const bytes = new Uint8Array(asset.data.byteLength);
     bytes.set(asset.data);
     const url = URL.createObjectURL(
       new Blob([bytes.buffer], { type: asset.mimeType || "application/octet-stream" })
     );
+    let materialXIrradianceTexture: Texture | null = null;
     try {
       const environmentTexture = await this.loadHdriTexture(asset.path, url, asset.mimeType);
+      if (materialXIrradianceAsset) {
+        materialXIrradianceTexture = await this.loadMaterialXIrradianceAsset(materialXIrradianceAsset);
+      }
       this.applyHdriTexture(
         environmentTexture.texture,
         label ?? asset.path,
-        environmentTexture.colorSpace
+        environmentTexture.colorSpace,
+        materialXIrradianceTexture
       );
     } finally {
       URL.revokeObjectURL(url);
@@ -158,6 +168,22 @@ export class LightingRig {
 
   hasHdriMap(): boolean {
     return this.hdriTexture !== null;
+  }
+
+  shouldUseDefaultLightRig(): boolean {
+    return !this.hdriTexture && this.stageDirectLightCount === 0;
+  }
+
+  getHdriTexture(): Texture | null {
+    return this.hdriTexture;
+  }
+
+  getMaterialXIrradianceTexture(): Texture | null {
+    return this.materialXIrradianceTexture;
+  }
+
+  getHdriRotation(): number {
+    return this.hdriRotation;
   }
 
   useRenderer(renderer: WebGLRenderer | WebGPURenderer): void {
@@ -288,7 +314,10 @@ export class LightingRig {
       return { texture: await this.exrLoader.loadAsync(url), colorSpace: LinearSRGBColorSpace };
     }
     if (isHdrTexture(name, mimeType)) {
-      return { texture: await this.hdrLoader.loadAsync(url), colorSpace: LinearSRGBColorSpace };
+      const texture = await this.hdrLoader.loadAsync(url);
+      texture.flipY = false;
+      flipTextureRows(texture);
+      return { texture, colorSpace: LinearSRGBColorSpace };
     }
     return { texture: await this.textureLoader.loadAsync(url), colorSpace: SRGBColorSpace };
   }
@@ -296,7 +325,8 @@ export class LightingRig {
   private applyHdriTexture(
     texture: Texture,
     name: string,
-    colorSpace: ColorSpace
+    colorSpace: ColorSpace,
+    materialXIrradianceTexture: Texture | null = null
   ): void {
     texture.name = name;
     texture.mapping = EquirectangularReflectionMapping;
@@ -305,6 +335,7 @@ export class LightingRig {
 
     this.disposeHdriTexture();
     this.hdriTexture = texture;
+    this.materialXIrradianceTexture = materialXIrradianceTexture;
     this.scene.environment = texture;
     this.scene.background = this.hdriMapVisible ? texture : this.defaultBackground;
     this.applyHdriIntensity();
@@ -318,7 +349,7 @@ export class LightingRig {
   }
 
   private updateDefaultLightRig(): void {
-    this.setDefaultLightRigEnabled(!this.hdriTexture && this.stageDirectLightCount === 0);
+    this.setDefaultLightRigEnabled(this.shouldUseDefaultLightRig());
   }
 
   private applyDefaultEnvironment(): void {
@@ -352,7 +383,29 @@ export class LightingRig {
     }
     this.hdriTexture.dispose();
     this.hdriTexture = null;
+    this.materialXIrradianceTexture?.dispose();
+    this.materialXIrradianceTexture = null;
     this.updateDefaultLightRig();
+  }
+
+  private async loadMaterialXIrradianceAsset(asset: RenderableTexture): Promise<Texture> {
+    const bytes = new Uint8Array(asset.data.byteLength);
+    bytes.set(asset.data);
+    const url = URL.createObjectURL(
+      new Blob([bytes.buffer], { type: asset.mimeType || "application/octet-stream" })
+    );
+    try {
+      const texture = isExrTexture(asset.path, asset.mimeType)
+        ? await this.exrLoader.loadAsync(url)
+        : await this.hdrLoader.loadAsync(url);
+      texture.name = asset.path;
+      texture.mapping = EquirectangularReflectionMapping;
+      texture.colorSpace = LinearSRGBColorSpace;
+      texture.needsUpdate = true;
+      return texture;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }
 
   private createStageLight(light: RenderableLight): Object3D | null {
@@ -763,4 +816,33 @@ function isHdrTexture(name: string, mimeType: string): boolean {
   return lowerName.endsWith(".hdr") ||
     lowerMime === "image/vnd.radiance" ||
     lowerMime === "image/x-hdr";
+}
+
+function flipTextureRows(texture: Texture): void {
+  const image = texture.image as { data?: ArrayLike<number>; width?: number; height?: number };
+  const data = image.data;
+  const height = image.height ?? 0;
+  if (!data || height <= 1 || typeof (data as { set?: unknown }).set !== "function") {
+    return;
+  }
+
+  const typedData = data as unknown as {
+    length: number;
+    slice(start?: number, end?: number): typeof typedData;
+    set(source: ArrayLike<number>, offset?: number): void;
+  };
+  const rowStride = typedData.length / height;
+  if (!Number.isInteger(rowStride) || rowStride <= 0) {
+    return;
+  }
+
+  const scratch = typedData.slice(0, rowStride);
+  for (let y = 0; y < Math.floor(height / 2); y += 1) {
+    const top = y * rowStride;
+    const bottom = (height - y - 1) * rowStride;
+    scratch.set(typedData.slice(top, top + rowStride), 0);
+    typedData.set(typedData.slice(bottom, bottom + rowStride), top);
+    typedData.set(scratch, bottom);
+  }
+  texture.needsUpdate = true;
 }

@@ -31,9 +31,8 @@ From the repository root:
 ```sh
 source /path/to/emsdk/emsdk_env.sh
 
-# On this machine cmake lives in Homebrew, not in the emsdk environment.
-# Use the absolute path if `cmake` is not already on PATH.
-export CMAKE_BIN=/opt/homebrew/bin/cmake
+# Override CMAKE_BIN when `cmake` is not already on PATH.
+export CMAKE_BIN="${CMAKE_BIN:-cmake}"
 
 emcmake $CMAKE_BIN -S native/usd-webview-bindings -B build/usd-webview-bindings \
   -DCMAKE_BUILD_TYPE=Release \
@@ -69,8 +68,9 @@ npm run dev
 
 Open the URL printed by Vite. The runtime panel should report **ready** once the WASM module loads.
 
-Plain `npm install` is enough for the frontend dependencies, including
-mainline Three.js and the checked-in official MaterialX JavaScript/WASM runtime.
+Plain `npm install` is enough for the frontend dependencies, including the
+pinned upstream Three.js dev snapshot and the checked-in official MaterialX
+JavaScript/WASM validation runtime.
 
 ## Rebuilding after C++ changes
 
@@ -78,7 +78,7 @@ Re-run the `cmake --build` and install step from section 2. The `emcmake cmake` 
 
 ```sh
 source /path/to/emsdk/emsdk_env.sh
-export CMAKE_BIN=/opt/homebrew/bin/cmake
+export CMAKE_BIN="${CMAKE_BIN:-cmake}"
 $CMAKE_BIN --build build/usd-webview-bindings --target install -- -j$(sysctl -n hw.logicalcpu)
 ```
 
@@ -123,9 +123,9 @@ npm run native:build   # cmake --build ... --target install && native:stamp
 
 ## MaterialX Note
 
-Current MaterialX behavior in this repo assumes:
+Current MaterialX behavior in this repo uses:
 
-- the viewer keeps the MaterialX loader in bottom-left mode
+- Three's MaterialX loader in top-left UV space
 - MaterialX meshes flip UV `V` on the final geometry before sampling
 - inline MaterialX graphs that use EXR image nodes can fall back to standard
   texture slots, because Three's MaterialX image path does not currently handle
@@ -133,6 +133,7 @@ Current MaterialX behavior in this repo assumes:
   MaterialX `V` flip
 
 If MaterialX output suddenly regresses after a viewer refactor, verify the
-MaterialX `Flip V` path in `src/viewer/GeometryBuilder.ts` and the EXR fallback
-rules in `src/viewer/materialXCompatibility.ts`; the unified stage driver
-already delivers UVs on the same corner stream as positions.
+loader `uvSpace` option in `src/viewer/MaterialFactory.ts`, the MaterialX
+`Flip V` path in `src/viewer/GeometryBuilder.ts`, and the EXR fallback rules in
+`src/viewer/materialXCompatibility.ts`; the unified stage driver already
+delivers UVs on the same corner stream as positions.

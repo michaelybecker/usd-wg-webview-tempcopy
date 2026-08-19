@@ -1,7 +1,8 @@
 # MaterialX Runtime
 
-This viewer uses the official ASWF MaterialX JavaScript/WASM release for the
-new MaterialX runtime path.
+This repository keeps the official ASWF MaterialX JavaScript/WASM release as a
+validation/reference runtime. Interactive MaterialX rendering uses upstream
+Three.js' MaterialX loader and node-material path.
 
 ## Vendored Version
 
@@ -12,8 +13,8 @@ new MaterialX runtime path.
 - Local path: `public/materialx/1.39.5/`
 
 The unpacked release contains `JsMaterialXCore` and `JsMaterialXGenShader`
-JavaScript/WASM modules. The viewer lazy-loads `JsMaterialXGenShader` only when
-MaterialX content is present.
+JavaScript/WASM modules. Unit tests lazy-load `JsMaterialXGenShader` to validate
+parsing and shader generation against the official implementation.
 
 ## Updating
 
@@ -37,25 +38,21 @@ When updating MaterialX versions:
 
 ## Runtime
 
-The viewer uses the official runtime by default. The adapter compiles through
-the official MaterialX generator, then uses a Three physical-material host for
-common `standard_surface` base-color image graphs and a generated ESSL
-`ShaderMaterial` fallback for other graphs.
+The viewer renders MaterialX through Three's `MaterialXLoader`, pinned to an
+upstream Three.js commit that includes the current MaterialX loader/compiler
+stack. The official WASM runtime is retained to validate documents and compare
+shader-generation behavior, not to produce the interactive viewport material.
 
 ## Current Fidelity Notes
 
-The official path compiles MaterialX through ASWF shader generation and hosts
-the result in Three. It already preserves USD-side responsibilities: material
-binding discovery, raw or synthesized `.mtlx` extraction, and texture byte
-extraction remain in the OpenUSD WASM layer.
+The active path preserves USD-side responsibilities: material binding
+discovery, raw or synthesized `.mtlx` extraction, and texture byte extraction
+remain in the OpenUSD WASM layer. Three's loader owns the MaterialX graph,
+surface mapping, UV convention, texture handling, and renderer integration.
 
 Known gaps while parity is still in progress:
 
-- The generated ESSL fallback has only minimal lighting and IBL integration
-  compared with the native MaterialX viewer; the physical-material host covers
-  the common textured `standard_surface` path with the viewer's built-in
-  lighting.
-- WGSL generation is exposed in the runtime wrapper for future renderer work,
-  but this branch does not integrate a Three WebGPU WGSL host.
+- The official WASM runtime can compile ESSL/WGSL for reference, but the viewer
+  does not host those generated shaders at runtime.
 - EXR MaterialX image nodes can still fall back to extracted standard texture
   slots where browser support is insufficient.

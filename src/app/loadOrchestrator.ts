@@ -86,7 +86,11 @@ export async function loadFiles(files: File[]): Promise<void> {
     state.hdriMapLabel = assetLabel(environment.texture.path);
     state.lightingMode = "hdri";
     try {
-      await state.viewport.loadHdriAsset(environment.texture, state.hdriMapLabel);
+      await state.viewport.loadHdriAsset(
+        environment.texture,
+        state.hdriMapLabel,
+        environment.materialXIrradianceTexture
+      );
       state.viewport.setHdriIntensity(state.hdriIntensity);
       state.viewport.setHdriRotation(environment.rotation ?? 0);
       state.viewport.setHdriMapVisible(state.hdriMapVisible);

@@ -179,6 +179,19 @@ _ExtractStageEnvironment(const UsdStageRefPtr& stage)
         environment.set("viewportCompensation", 1.0f);
         environment.set("rotation", rotation);
         environment.set("texture", texture);
+
+        SdfAssetPath materialXIrradianceFile;
+        if (_GetAttrValue(prim.GetAttribute(TfToken("inputs:materialx:irradiance:file")), &materialXIrradianceFile)) {
+            const std::string irradianceRawPath = !materialXIrradianceFile.GetResolvedPath().empty()
+                ? materialXIrradianceFile.GetResolvedPath()
+                : materialXIrradianceFile.GetAssetPath();
+            if (!irradianceRawPath.empty()) {
+                emscripten::val irradianceTexture = _ReadTextureAsset(irradianceRawPath, packageRootPath);
+                if (!irradianceTexture["data"].isUndefined()) {
+                    environment.set("materialXIrradianceTexture", irradianceTexture);
+                }
+            }
+        }
         return environment;
     }
 

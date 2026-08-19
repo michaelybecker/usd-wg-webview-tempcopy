@@ -17,11 +17,15 @@
     "usd-material-fidelity": "node tools/usd-material-fidelity/run.mjs",
     "usd-material-fidelity:all": "node tools/usd-material-fidelity/run.mjs --all",
     "usd-material-fidelity:render": "node tools/usd-material-fidelity/render-webview.mjs",
-    "usd-material-fidelity:diff": "node tools/usd-material-fidelity/diff.mjs"
+    "usd-material-fidelity:diff": "node tools/usd-material-fidelity/diff.mjs",
+    "usd-material-fidelity:setup": "node tools/usd-material-fidelity/setup.mjs",
+    "usd-material-fidelity:shaderball": "node tools/usd-material-fidelity/shaderball.mjs",
+    "usd-material-fidelity:shaderball:all": "node tools/usd-material-fidelity/shaderball.mjs --all",
+    "usd-material-fidelity:shaderball:streams": "node tools/usd-material-fidelity/verify-shaderball-streams.mjs"
   },
   "dependencies": {
     "@sparkjsdev/spark": "^2.0.0",
-    "three": "^0.184.0"
+    "three": "https://codeload.github.com/mrdoob/three.js/tar.gz/16e7674dbcda5137e48953959bdf5275f834642a"
   },
   "devDependencies": {
     "@types/three": "^0.180.0",

@@ -42,6 +42,7 @@ export type StageEnvironment = {
   rotation?: number;
   warning?: string;
   texture: RenderableTexture;
+  materialXIrradianceTexture?: RenderableTexture;
 };
 
 export type RenderableMesh = {

@@ -14,8 +14,8 @@ required.
   authored normals, subsets, and material bindings.
 - **Materials** - UsdPreviewSurface PBR scalars and texture slots (diffuse,
   roughness, metallic, normal, occlusion, emissive, clearcoat, clearcoat
-  roughness, opacity), plus MaterialX materials through the official ASWF
-  MaterialX JavaScript/WASM runtime.
+  roughness, opacity), plus MaterialX materials through upstream Three.js'
+  MaterialX loader and node-material path.
 - **Variant sets** - variant badges in the scene graph, dropdown selection in
   the attributes panel, and coherent geometry/material redraws after selection
   changes.
@@ -39,9 +39,8 @@ required.
 
 ## Current Constraints
 
-- **Gaussian splats + MaterialX** - SparkJS remains WebGL-only; the official
-  MaterialX raster path is WebGL2-capable and no longer forces a WebGPU
-  renderer switch.
+- **Gaussian splats + MaterialX** - SparkJS remains WebGL-only; MaterialX
+  rendering uses Three's WebGPU/TSL path and can require a renderer switch.
 - **USDLux fidelity** - USDLux is translated to the light types available in
   Three.js, not path-traced. WebGL and WebGPU have different area-light
   behavior; see [Lighting](docs/lighting.md).
@@ -110,4 +109,4 @@ Open the local URL printed by Vite. The WASM bindings must be built first — se
 - [Building](docs/building.md) — Prerequisites and build instructions for the WASM bindings and frontend
 - [Lighting](docs/lighting.md) — USDLux translation, WebGL/WebGPU behavior, gizmos, editable attributes, and limitations
 - [Material and Geometry Strategy](docs/material-geometry-strategy.md) — Unified stage-driver geometry, authored-material payloads, and known rendering constraints
-- [USD Material Fidelity](docs/usd-material-fidelity.md) — Local harness for USD-wrapping `material-fidelity` cases and validating the viewer translation boundary
+- [USD Material Fidelity](tools/usd-material-fidelity/README.md) — Opt-in MaterialX/USD shaderball fidelity harness, setup, and current baseline

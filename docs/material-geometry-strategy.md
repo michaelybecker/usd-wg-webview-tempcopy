@@ -72,9 +72,10 @@ Geometry never carries material payloads. `ExtractMaterialPayloads(stagePath)`
 returns authored materials keyed by material prim path;
 `UsdWebViewRuntime` resolves `materialPath` → payload when converting
 `MeshUpdate`s to renderables. MaterialX materials are delivered as raw `.mtlx`
-bytes (via `info:mtlx:sourceAsset` on the bound shader), compiled through the
-official ASWF MaterialX JavaScript/WASM runtime, and hosted by the viewer's
-Three.js material adapter.
+bytes (via `info:mtlx:sourceAsset` on the bound shader), then parsed by
+upstream Three.js' MaterialX loader into node materials. The checked-in
+official ASWF MaterialX JavaScript/WASM runtime remains available for
+validation/reference tests, but is not the interactive rendering path.
 
 The MaterialX UV `V` flip lives in exactly one place:
 `GeometryBuilder.applyMaterialXUvOptions`. The `materialx-tiled` regression
@@ -94,8 +95,8 @@ materials arrive coherently by construction.
 ## Known degradations and constraints
 
 - **Gaussian splats + MaterialX**: SparkJS renders splats on the WebGL path
-  only. The official MaterialX raster path is WebGL2-capable, so MaterialX no
-  longer requires switching the viewport to `WebGPURenderer`.
+  only. MaterialX uses Three's WebGPU/TSL path, so the viewport may switch to
+  `WebGPURenderer` and drop splat rendering.
 - **Headless automation** cannot present real-WebGPU canvases; the regression
   runner passes `?forceWebGL=1` for cases that explicitly require WebGPU.
 
