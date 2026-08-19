@@ -1,10 +1,23 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 const TOOL_ROOT = path.resolve("tools/usd-material-fidelity");
 const GENERATED_ROOT = path.join(TOOL_ROOT, "generated");
 const RESULTS_ROOT = path.join(TOOL_ROOT, "results");
 const REPORTS_ROOT = path.join(TOOL_ROOT, "reports");
+const CONFIG_FILE = "config.samples.json";
+const LOCAL_CONFIG_FILE = "config.local.json";
+
+export function getFidelityCacheRoot() {
+  if (process.env.USD_MATERIAL_FIDELITY_CACHE) {
+    return path.resolve(process.env.USD_MATERIAL_FIDELITY_CACHE);
+  }
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
+    return path.join(process.env.LOCALAPPDATA, "usd-wg-webview", "material-fidelity");
+  }
+  return path.join(process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), ".cache"), "usd-wg-webview", "material-fidelity");
+}
 
 export function getToolPaths() {
   return {
@@ -12,23 +25,58 @@ export function getToolPaths() {
     generatedRoot: GENERATED_ROOT,
     resultsRoot: RESULTS_ROOT,
     reportsRoot: REPORTS_ROOT,
-    configPath: path.join(TOOL_ROOT, "config.samples.json"),
+    configPath: path.join(TOOL_ROOT, CONFIG_FILE),
+    localConfigPath: path.join(TOOL_ROOT, LOCAL_CONFIG_FILE),
   };
 }
 
 export async function readConfig(configPath = getToolPaths().configPath) {
   const raw = await fs.readFile(configPath, "utf8");
-  const config = JSON.parse(raw);
+  let config = JSON.parse(raw);
+  const defaultConfigPath = getToolPaths().configPath;
+
+  if (path.resolve(configPath) === path.resolve(defaultConfigPath)) {
+    const localConfigPath = getToolPaths().localConfigPath;
+    if (await pathExists(localConfigPath)) {
+      const localRaw = await fs.readFile(localConfigPath, "utf8");
+      config = mergeConfig(config, JSON.parse(localRaw));
+    }
+  }
   const rootDir = path.dirname(configPath);
+  const materialFidelityRoot = config.materialFidelityRoot
+    ? path.resolve(rootDir, config.materialFidelityRoot)
+    : "";
+  const shaderball = config.shaderball ?? {};
+  const cacheRoot = getFidelityCacheRoot();
+  const materialSamplesRoot = process.env.USD_MATERIAL_SAMPLES_ROOT
+    ? path.resolve(process.env.USD_MATERIAL_SAMPLES_ROOT)
+    : path.join(cacheRoot, "material-samples");
+  const referenceRenderer = config.referenceRenderer ?? config.baselineRenderer ?? "threejs-new";
 
   return {
     ...config,
-    materialFidelityRoot: path.resolve(rootDir, config.materialFidelityRoot),
+    materialFidelityRoot,
+    referenceRoot: config.referenceRoot
+      ? path.resolve(rootDir, config.referenceRoot)
+      : path.join(materialSamplesRoot, "materials"),
+    referenceRenderer,
+    referenceRenderers: config.referenceRenderers ?? [referenceRenderer],
     capture: {
       viewportWidth: config.capture?.viewportWidth ?? 1024,
       viewportHeight: config.capture?.viewportHeight ?? 1024,
       timeoutMs: config.capture?.timeoutMs ?? 60000,
       settleFrames: config.capture?.settleFrames ?? 6,
+    },
+    shaderball: {
+      ...shaderball,
+      packageRoot: shaderball.packageRoot
+        ? path.resolve(rootDir, shaderball.packageRoot)
+        : path.join(cacheRoot, "portable-materialx_shaderball"),
+      rootFile: shaderball.rootFile ?? "shaderball.usda",
+      rootPrimPath: shaderball.rootPrimPath ?? "/materialx_shaderball",
+      suites: shaderball.suites ?? ["showcase", "library", "nodes"],
+      selection: shaderball.selection ?? config.selection ?? { mode: "subset", cases: [] },
+      capture: shaderball.capture ?? {},
     },
     carrierScene: {
       ...config.carrierScene,
@@ -40,6 +88,22 @@ export async function readConfig(configPath = getToolPaths().configPath) {
         : "",
     },
   };
+}
+
+function mergeConfig(base, override) {
+  if (!isPlainObject(base) || !isPlainObject(override)) {
+    return override;
+  }
+
+  const merged = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    merged[key] = key in base ? mergeConfig(base[key], value) : value;
+  }
+  return merged;
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 export async function ensureDir(dirPath) {

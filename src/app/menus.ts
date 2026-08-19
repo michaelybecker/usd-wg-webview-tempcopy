@@ -121,6 +121,12 @@ export function applyColorSpaceOptions(): void {
   }
 }
 
+export function applyAxesOptions(): void {
+  state.viewport.setAxesVisible(state.axesVisible);
+  app.querySelector<HTMLButtonElement>("#menuAxesVisible")
+    ?.classList.toggle("menu-option--checked", state.axesVisible);
+}
+
 export async function applyMaterialXOptions(): Promise<void> {
   state.viewport.setMaterialXFlipV(state.materialXFlipV);
   app.querySelector<HTMLButtonElement>("#menuMaterialXFlipV")
@@ -224,6 +230,7 @@ export function syncViewportState(target: ThreeViewport): void {
   target.setGameCameraSpeed(state.gameCameraSpeed);
   target.setViewUpAxis(getEffectiveUpAxis(state.currentStageSummary?.upAxis));
   target.setOutputColorSpace(state.outputColorSpace as ColorSpace);
+  target.setAxesVisible(state.axesVisible);
   target.setMaterialXFlipV(state.materialXFlipV);
   target.setToneMapping(toneMappingForChoice(state.toneMappingChoice));
   target.setToneMappingExposure(state.toneMappingExposure);
@@ -283,6 +290,11 @@ for (const button of app.querySelectorAll<HTMLButtonElement>("[data-output-color
 app.querySelector("#menuMaterialXFlipV")?.addEventListener("click", () => {
   state.materialXFlipV = !state.materialXFlipV;
   void applyMaterialXOptions();
+});
+
+app.querySelector("#menuAxesVisible")?.addEventListener("click", () => {
+  state.axesVisible = !state.axesVisible;
+  applyAxesOptions();
 });
 
 for (const button of app.querySelectorAll<HTMLButtonElement>("[data-purpose-policy]")) {
@@ -401,6 +413,7 @@ applySplatViewOptions();
 applyNavigationOptions();
 applyUpAxisOptions();
 applyColorSpaceOptions();
+applyAxesOptions();
 void applyMaterialXOptions();
 void applyPurposeOptions();
 applyToneMappingOptions();

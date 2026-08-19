@@ -1,6 +1,6 @@
 // Material creation and update for renderable meshes: MeshPhysicalMaterial
-// mapping from UsdPreviewSurface data, MaterialX parsing (WebGPU renderer
-// only), material-key change detection, and MaterialX resource resolution.
+// mapping from UsdPreviewSurface data, MaterialX parsing through Three,
+// material-key change detection, and MaterialX resource resolution.
 
 import {
   Color,
@@ -10,7 +10,8 @@ import {
   MeshPhysicalMaterial,
 } from "three";
 import { MaterialXLoader } from "three/examples/jsm/loaders/MaterialXLoader.js";
-import type { RenderableMaterial, RenderableMesh, RenderableTexture } from "../usd/types";
+import type { RenderableMaterial, RenderableMesh } from "../usd/types";
+import { MaterialXAssetResolver } from "../materialx/MaterialXAssetResolver";
 import {
   getRenderableMaterialKey,
   getRenderableMaterialXEntries,
@@ -21,10 +22,12 @@ import type { TextureCache } from "./TextureCache";
 import { materialShouldUseTextureFallback, prepareMaterialXForThree } from "./materialXCompatibility";
 
 const TEXT_DECODER = new TextDecoder();
+export type MaterialXDebugOutputMode = "none" | "graphColor";
 
 export class MaterialFactory {
   readonly materialXLoader = new MaterialXLoader();
-  private readonly materialXResourceUrls = new Map<string, string>();
+  private readonly materialXResolver = new MaterialXAssetResolver();
+  private readonly materialXMaterials = new Map<string, Material | null>();
   private readonly materialXTangentWarnings = new Set<string>();
   private experimentalMaterialXMode = false;
 
@@ -40,13 +43,36 @@ export class MaterialFactory {
   // Reset per-stage state (warnings, resource URLs, MaterialX mode flag).
   clearStageState(): void {
     this.materialXTangentWarnings.clear();
-    this.revokeMaterialXResourceUrls();
+    this.materialXMaterials.clear();
+    this.materialXResolver.revokeUrls();
     this.experimentalMaterialXMode = false;
   }
 
   dispose(): void {
     this.materialXLoader.dispose();
-    this.revokeMaterialXResourceUrls();
+    this.materialXResolver.revokeUrls();
+  }
+
+  setMaterialXDebugOutputMode(_mode: MaterialXDebugOutputMode): boolean {
+    return false;
+  }
+
+  async prepareMaterialXMaterials(renderables: RenderableMesh[]): Promise<void> {
+    const entries = renderables.flatMap((renderable) => getRenderableMaterialXEntries(renderable));
+    for (const materialX of entries) {
+      const key = materialXCacheKey(materialX.path, materialX.materialName);
+      if (this.materialXMaterials.has(key)) continue;
+      try {
+        this.materialXMaterials.set(key, this.createThreeMaterialXMaterial(materialX));
+      } catch (error) {
+        console.warn("[USD WebView] Failed to create Three MaterialX material", {
+          path: materialX.path,
+          materialName: materialX.materialName,
+          error,
+        });
+        this.materialXMaterials.set(key, null);
+      }
+    }
   }
 
   createRenderableMaterials(renderable: RenderableMesh): Material | Material[] {
@@ -91,7 +117,7 @@ export class MaterialFactory {
 
     for (let index = 0; index < materials.length; ++index) {
       const material = materials[index];
-      if (material instanceof MeshPhysicalMaterial) {
+      if (material instanceof MeshPhysicalMaterial && material.userData.webviewMaterialX !== true) {
         this.updateMaterialProperties(material, renderable, materialSources[index]);
         this.textures.applyMaterialTextures(material, materialSources[index], textureLoads);
       }
@@ -125,6 +151,22 @@ export class MaterialFactory {
     if (!materialX.data?.length) {
       return null;
     }
+
+    if (materialShouldUseTextureFallback(rmat)) {
+      return null;
+    }
+    const material = this.materialXMaterials.get(materialXCacheKey(materialX.path, materialX.materialName));
+    if (material) {
+      this.experimentalMaterialXMode = true;
+      return material.clone();
+    }
+    return null;
+  }
+
+  private createThreeMaterialXMaterial(materialX: NonNullable<RenderableMaterial["materialX"]>): Material | null {
+    if (!materialX.data?.length) {
+      return null;
+    }
     if (!this.isWebGpuRenderer()) {
       console.warn("[USD WebView] Skipping MaterialX material because WebGPU renderer is unavailable", {
         path: materialX.path,
@@ -133,44 +175,53 @@ export class MaterialFactory {
       return null;
     }
 
-    try {
-      const originalMaterialXText = TEXT_DECODER.decode(materialX.data);
-      if (materialShouldUseTextureFallback(rmat)) {
-        return null;
-      }
-      const materialXText = prepareMaterialXForThree(originalMaterialXText);
-      const result = this.materialXLoader.parse(materialXText, {
-        materialName: materialX.materialName,
-        archiveResolver: (uri: string) => this.resolveMaterialXResource(uri, materialX.path, materialX.resources ?? []),
-        path: materialX.path,
-        uvSpace: "bottom-left",
-        issuePolicy: "warn",
-      });
-      materialX.report = result.report;
-      const material = materialX.materialName
-        ? result.materials[materialX.materialName]
-        : Object.values(result.materials)[0];
-      if (!material) {
-        console.warn("[USD WebView] MaterialX loader did not produce a usable material", {
-          path: materialX.path,
-          materialName: materialX.materialName,
-          availableMaterials: Object.keys(result.materials),
-          report: result.report,
+    const originalMaterialXText = TEXT_DECODER.decode(materialX.data);
+    const materialXText = prepareMaterialXForThree(originalMaterialXText);
+    const textureResolutions: Array<{
+      uri: string;
+      resourceCount: number;
+      resolved: boolean;
+      resolvedPath?: string;
+      byteLength?: number;
+      bytePrefix?: number[];
+    }> = [];
+    const result = this.materialXLoader.parse(materialXText, {
+      materialName: materialX.materialName,
+      archiveResolver: (uri: string) => {
+        const resolved = this.materialXResolver.resolve(uri, materialX.path, materialX.resources ?? []);
+        textureResolutions.push({
+          uri,
+          resourceCount: materialX.resources?.length ?? 0,
+          resolved: !!resolved,
+          resolvedPath: resolved?.path,
+          byteLength: resolved?.data?.length,
+          bytePrefix: resolved?.data ? Array.from(resolved.data.slice(0, 8)) : undefined,
         });
-        return null;
-      }
-      material.side = DoubleSide;
-      material.userData.webviewMaterialX = true;
-      this.experimentalMaterialXMode = true;
-      return material;
-    } catch (error) {
-      console.warn("[USD WebView] Failed to create MaterialX material", {
+        return resolved?.url ?? null;
+      },
+      path: "",
+      uvSpace: "top-left",
+      issuePolicy: "warn",
+    });
+    materialX.report = result.report;
+    const material = materialX.materialName
+      ? result.materials[materialX.materialName]
+      : Object.values(result.materials)[0];
+    if (!material) {
+      console.warn("[USD WebView] MaterialX loader did not produce a usable material", {
         path: materialX.path,
         materialName: materialX.materialName,
-        error,
+        availableMaterials: Object.keys(result.materials),
+        report: result.report,
       });
       return null;
     }
+
+    material.userData.webviewMaterialX = true;
+    material.userData.webviewMaterialXRuntime = "three";
+    material.userData.webviewMaterialXHost = "three-materialx-loader";
+    material.userData.webviewMaterialXTextureResolutions = textureResolutions;
+    return material;
   }
 
   meshHasMaterialXMaterial(mesh: Mesh): boolean {
@@ -233,48 +284,6 @@ export class MaterialFactory {
     return (rmat?.opacity ?? 1) < 1 || !!rmat?.opacityTexture;
   }
 
-  private resolveMaterialXResource(
-    uri: string,
-    materialXPath: string,
-    resources: RenderableTexture[]
-  ): string | null {
-    const normalizedUri = normalizeAssetPath(uri);
-    const basePath = normalizeAssetPath(materialXPath).split("/").slice(0, -1).join("/");
-    const candidates = assetPathCandidates(normalizedUri, basePath);
-
-    const resource = resources.find((candidate) => {
-      const path = normalizeAssetPath(candidate.path);
-      const resourceCandidates = assetPathCandidates(path);
-      for (const resourceCandidate of resourceCandidates) {
-        if (candidates.has(resourceCandidate)) {
-          return true;
-        }
-      }
-      return false;
-    });
-    if (!resource?.data?.length) {
-      return null;
-    }
-
-    const cached = this.materialXResourceUrls.get(resource.path);
-    if (cached) {
-      return cached;
-    }
-
-    const url = createDataUrl(resource.data, resource.mimeType);
-    this.materialXResourceUrls.set(resource.path, url);
-    return url;
-  }
-
-  private revokeMaterialXResourceUrls(): void {
-    for (const url of this.materialXResourceUrls.values()) {
-      if (url.startsWith("blob:")) {
-        URL.revokeObjectURL(url);
-      }
-    }
-    this.materialXResourceUrls.clear();
-  }
-
   warnIfMaterialXNeedsTangents(renderable: RenderableMesh, detail: string): void {
     for (const materialX of getRenderableMaterialXEntries(renderable)) {
       if (!this.materialXMayNeedTangents(materialX)) {
@@ -308,53 +317,9 @@ export class MaterialFactory {
   }
 }
 
-function normalizeAssetPath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
-}
-
-function assetPathCandidates(path: string, basePath = ""): Set<string> {
-  const candidates = new Set<string>();
-  const add = (candidate: string) => {
-    const normalized = normalizeAssetPath(candidate);
-    if (!normalized) {
-      return;
-    }
-    candidates.add(normalized);
-    candidates.add(normalized.split("/").pop() ?? normalized);
-
-    const packageMember = extractPackageMemberPath(normalized);
-    if (packageMember && packageMember !== normalized) {
-      candidates.add(packageMember);
-      candidates.add(packageMember.split("/").pop() ?? packageMember);
-    }
-  };
-
-  add(path);
-  if (basePath) {
-    add(`${basePath}/${path}`);
-  }
-
-  return candidates;
-}
-
-function extractPackageMemberPath(path: string): string | null {
-  const openBracket = path.indexOf("[");
-  const closeBracket = path.lastIndexOf("]");
-  if (openBracket === -1 || closeBracket <= openBracket) {
-    return null;
-  }
-
-  return normalizeAssetPath(path.slice(openBracket + 1, closeBracket));
-}
-
-function createDataUrl(bytes: Uint8Array, mimeType: string): string {
-  let binary = "";
-  const chunkSize = 0x8000;
-
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-
-  return `data:${mimeType};base64,${btoa(binary)}`;
+function materialXCacheKey(
+  path: string,
+  materialName?: string
+): string {
+  return `${path}:${materialName ?? ""}`;
 }

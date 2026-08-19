@@ -33,6 +33,7 @@ describe("prepareMaterialXForThree", () => {
 
     expect(prepareMaterialXForThree(input)).toBe(input);
   });
+
 });
 
 describe("materialXUsesExrImages", () => {

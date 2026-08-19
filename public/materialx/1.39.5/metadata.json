@@ -1,0 +1,8 @@
+{
+  "name": "MaterialX JavaScript Runtime",
+  "version": "1.39.5",
+  "sourceUrl": "https://github.com/AcademySoftwareFoundation/MaterialX/releases/download/v1.39.5/MaterialX_JavaScript.zip",
+  "archive": "MaterialX_JavaScript.zip",
+  "sha256": "fbb0afe06064b4a5606d52dafe3b740f093de084000f11340ac0a6a88a7ecb0b",
+  "fetchedAt": "2026-08-11T21:40:56.557Z"
+}

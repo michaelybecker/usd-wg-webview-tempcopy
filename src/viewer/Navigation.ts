@@ -5,6 +5,13 @@ import { Box3, Vector3 } from "three";
 import type { ViewportContext } from "./viewerContext";
 
 export type NavigationMode = "orbital" | "game";
+export type CameraPose = {
+  fov?: number;
+  near?: number;
+  far?: number;
+  position: [number, number, number];
+  target: [number, number, number];
+};
 
 interface FrameAnim {
   startPos: Vector3;
@@ -60,6 +67,24 @@ export class NavigationController {
 
   cancelFrameAnim(): void {
     this.frameAnim = null;
+  }
+
+  setCameraPose(pose: CameraPose): void {
+    this.frameAnim = null;
+    if (pose.fov !== undefined && Number.isFinite(pose.fov)) {
+      this.ctx.camera.fov = pose.fov;
+    }
+    if (pose.near !== undefined && Number.isFinite(pose.near)) {
+      this.ctx.camera.near = pose.near;
+    }
+    if (pose.far !== undefined && Number.isFinite(pose.far)) {
+      this.ctx.camera.far = pose.far;
+    }
+    this.ctx.camera.position.fromArray(pose.position);
+    this.ctx.controls.target.fromArray(pose.target);
+    this.ctx.camera.lookAt(this.ctx.controls.target);
+    this.ctx.camera.updateProjectionMatrix();
+    this.ctx.controls.update();
   }
 
   tickFrameAnim(): void {

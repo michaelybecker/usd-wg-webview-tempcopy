@@ -330,7 +330,7 @@ function buildExpandedVertexTangents(
   renderable: RenderableMesh,
   opts: GeometryBuildOptions
 ): Float32BufferAttribute | null {
-  const { points, indices, uvs } = renderable;
+  const { points, indices, uvs, normals } = renderable;
   if (!uvs?.length) {
     opts.warnTangents(renderable, "MaterialX tangent generation skipped because the mesh has no UVs.");
     return null;
@@ -343,7 +343,11 @@ function buildExpandedVertexTangents(
     const uvAttribute = new Float32BufferAttribute(new Float32Array(uvs), 2);
     applyMaterialXUvOptions(uvAttribute, renderable, opts.materialXFlipV);
     indexedGeometry.setAttribute("uv", uvAttribute);
-    indexedGeometry.setAttribute("normal", new Float32BufferAttribute(buildIndexedVertexNormals(points, indices), 3));
+    const indexedNormals =
+      normals && normals.length === points.length
+        ? normals
+        : buildIndexedVertexNormals(points, indices);
+    indexedGeometry.setAttribute("normal", new Float32BufferAttribute(indexedNormals, 3));
     indexedGeometry.setIndex(Array.from(indices, (value) => Number(value)));
     indexedGeometry.computeTangents();
 

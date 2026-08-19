@@ -60,6 +60,7 @@ app.innerHTML = `
           <li class="menu-submenu">
             <button class="menu-option menu-submenu-trigger">Display</button>
             <ul class="menu-dropdown menu-submenu-dropdown">
+              <li><button class="menu-option" id="menuAxesVisible">Show axes</button></li>
               <li class="menu-submenu">
                 <button class="menu-option menu-submenu-trigger">Color Space</button>
                 <ul class="menu-dropdown menu-submenu-dropdown">
