@@ -48,6 +48,10 @@ export async function renderWebviewCases({ mode = null, baseUrl = null } = {}) {
         waitUntil: "networkidle",
         timeout: config.capture.timeoutMs,
       });
+      await page.waitForFunction(
+        () => Boolean(window.__USD_WEBVIEW_AUTOMATION__),
+        { timeout: config.capture.timeoutMs }
+      );
 
       const result = await page.evaluate(async ({ timeoutMs }) => {
         const api = window.__USD_WEBVIEW_AUTOMATION__;
@@ -73,9 +77,9 @@ export async function renderWebviewCases({ mode = null, baseUrl = null } = {}) {
   } finally {
     await browser.close();
     if (server) {
-      server.kill("SIGTERM");
+      stopViteServer(server);
       if (!serverStarted) {
-        server.kill("SIGKILL");
+        stopViteServer(server, true);
       }
     }
   }
@@ -93,10 +97,25 @@ export async function renderWebviewCases({ mode = null, baseUrl = null } = {}) {
 }
 
 function startViteServer() {
-  return spawn("npm", ["run", "dev"], {
+  const command = process.platform === "win32" ? process.execPath : "npm";
+  const args = process.platform === "win32"
+    ? [path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"), "run", "dev"]
+    : ["run", "dev"];
+  return spawn(command, args, {
     stdio: "ignore",
-    shell: true,
+    shell: false,
   });
+}
+
+function stopViteServer(server, force = false) {
+  if (!server || server.exitCode !== null || server.killed) {
+    return;
+  }
+  if (process.platform === "win32") {
+    spawn("taskkill", ["/pid", String(server.pid), "/T", "/F"], { stdio: "ignore" });
+    return;
+  }
+  server.kill(force ? "SIGKILL" : "SIGTERM");
 }
 
 async function waitForHttpReady(baseUrl, timeoutMs) {

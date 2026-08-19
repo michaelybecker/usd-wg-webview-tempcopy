@@ -2,6 +2,7 @@ import { runtime, state } from "./appState";
 import { sampleAnimationFrame, updatePlaybarScrubber } from "./animation";
 import { loadAutomationManifestStage } from "./loadOrchestrator";
 import { applyStageEdit } from "./stageEdits";
+import type { ReferenceCaptureOptions, ViewportDebugMaterialInfo } from "../viewer/ThreeViewport";
 
 export type AutomationManifest = {
   caseId?: string;
@@ -22,6 +23,7 @@ export type AutomationApi = {
   getState(): AutomationState;
   waitForReady(timeoutMs?: number): Promise<AutomationState>;
   loadManifest(manifestUrl: string, timeoutMs?: number): Promise<AutomationState>;
+  configureReferenceCapture(options: ReferenceCaptureOptions): Promise<void>;
   setTime(timeCode: number): Promise<void>;
   setVariantSelection(
     primPath: string,
@@ -30,6 +32,8 @@ export type AutomationApi = {
   ): Promise<boolean>;
   setPayloadLoaded(primPath: string, loaded: boolean): Promise<boolean>;
   settle(frameCount?: number): Promise<void>;
+  renderForCapture(passes?: number): Promise<void>;
+  getViewportDebugMaterialInfo(): ViewportDebugMaterialInfo[];
 };
 
 declare global {
@@ -127,6 +131,26 @@ window.__USD_WEBVIEW_AUTOMATION__ = {
     await loadAutomationManifestStage(manifestUrl);
     return waitForAutomationReady(timeoutMs);
   },
+  async configureReferenceCapture(options: ReferenceCaptureOptions): Promise<void> {
+    const materialXDebugChanged = options.materialXDebugOutput !== undefined
+      ? state.viewport.setMaterialXDebugOutputMode(options.materialXDebugOutput)
+      : false;
+    if (options.axesVisible !== undefined) {
+      state.axesVisible = options.axesVisible;
+    }
+    if (options.lightGizmosVisible !== undefined) {
+      state.lightGizmosVisible = options.lightGizmosVisible;
+    }
+    if (options.hdriMapVisible !== undefined) {
+      state.hdriMapVisible = options.hdriMapVisible;
+    }
+    const coordinateSpaceChanged = state.viewport.applyReferenceCaptureOptions(options);
+    if (materialXDebugChanged || coordinateSpaceChanged) {
+      await applyStageEdit(undefined, "updating reference capture...");
+      state.viewport.applyReferenceCaptureOptions(options);
+    }
+    await waitForSettledFrames();
+  },
   // The mutation entrypoints below intentionally re-use the exact code paths
   // the UI handlers hit (scrubber input, variant select, payload badge) so
   // automation captures exercise real user behavior.
@@ -160,5 +184,11 @@ window.__USD_WEBVIEW_AUTOMATION__ = {
   },
   async settle(frameCount?: number): Promise<void> {
     await waitForSettledFrames(frameCount);
+  },
+  async renderForCapture(passes?: number): Promise<void> {
+    await state.viewport.renderForCapture(passes);
+  },
+  getViewportDebugMaterialInfo(): ViewportDebugMaterialInfo[] {
+    return state.viewport.getDebugMaterialInfo();
   },
 };

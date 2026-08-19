@@ -1,8 +1,17 @@
 {
-  "materialFidelityRoot": "../material-fidelity",
+  "materialFidelityRoot": "",
   "baselineRenderer": "threejs-new",
+  "referenceRoot": "",
+  "referenceRenderer": "materialx-glsl",
+  "referenceRenderers": [
+    "threejs-new",
+    "materialx-glsl",
+    "materialx-metal",
+    "materialx-osl",
+    "blender-nodes"
+  ],
   "capture": {
-    "viewportWidth": 1024,
+    "viewportWidth": 512,
     "viewportHeight": 1024,
     "timeoutMs": 60000,
     "settleFrames": 6
@@ -12,6 +21,49 @@
     "packageRoot": "",
     "rootPrimPath": "/World",
     "bindingTargets": []
+  },
+  "shaderball": {
+    "packageRoot": "",
+    "rootFile": "shaderball.usda",
+    "rootPrimPath": "/materialx_shaderball",
+    "suites": [
+      "showcase",
+      "library",
+      "nodes"
+    ],
+    "capture": {
+      "camera": {
+        "fov": 45,
+        "near": 0.05,
+        "far": 1000,
+        "position": [0, 0, 5],
+        "target": [0, 0, 0]
+      },
+      "environmentRotationDegrees": -90,
+      "hdriMapVisible": true,
+      "toneMapping": "none",
+      "outputColorSpace": "srgb",
+      "lightGizmosVisible": false,
+      "axesVisible": false,
+      "materialXFlipV": true,
+      "normalizeStageToYUp": true,
+      "modelNormalization": {
+        "enabled": true,
+        "targetRadius": 2,
+        "target": [0, 0, 0]
+      }
+    },
+    "selection": {
+      "mode": "subset",
+      "cases": [
+        "showcase/standard_surface/glass",
+        "showcase/open_pbr_surface/glass",
+        "library/open_pbr_surface/brushed_metal_anisotropy",
+        "nodes/image",
+        "nodes/noise2d_defaults",
+        "nodes/normal_world"
+      ]
+    }
   },
   "selection": {
     "mode": "subset",

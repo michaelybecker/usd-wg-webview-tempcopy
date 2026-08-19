@@ -248,11 +248,171 @@ _ReadTextureAsset(const std::string& path, const std::string& packageRootPath)
     return texture;
 }
 
+std::string
+_ReadTextAsset(const std::string& path, const std::string& packageRootPath)
+{
+    if (path.empty()) {
+        return std::string();
+    }
+
+    ArResolvedPath resolvedPath = ArGetResolver().Resolve(path);
+    std::string resolvedAssetPath = path;
+    if (resolvedPath.IsEmpty() && !packageRootPath.empty() && !ArIsPackageRelativePath(path)) {
+        resolvedAssetPath = ArJoinPackageRelativePath(packageRootPath, path);
+        resolvedPath = ArGetResolver().Resolve(resolvedAssetPath);
+    }
+    if (resolvedPath.IsEmpty() && ArIsPackageRelativePath(path)) {
+        resolvedPath = ArResolvedPath(path);
+    }
+    if (resolvedPath.IsEmpty()) {
+        resolvedPath = ArResolvedPath(resolvedAssetPath);
+    }
+
+    std::shared_ptr<ArAsset> asset = ArGetResolver().OpenAsset(resolvedPath);
+    if (!asset) {
+        return std::string();
+    }
+
+    std::string text(asset->GetSize(), '\0');
+    if (!text.empty() && asset->Read(text.data(), text.size(), 0) != text.size()) {
+        return std::string();
+    }
+    return text;
+}
+
 bool
 _IsMaterialXAssetPath(const std::string& path)
 {
     const std::string lower = TfStringToLower(path);
     return TfStringEndsWith(lower, ".mtlx") || TfStringEndsWith(lower, ".mtlx.zip");
+}
+
+bool
+_IsTextureAssetPath(const std::string& path)
+{
+    const std::string lower = TfStringToLower(path);
+    return TfStringEndsWith(lower, ".png") ||
+        TfStringEndsWith(lower, ".jpg") ||
+        TfStringEndsWith(lower, ".jpeg") ||
+        TfStringEndsWith(lower, ".webp") ||
+        TfStringEndsWith(lower, ".svg") ||
+        TfStringEndsWith(lower, ".hdr") ||
+        TfStringEndsWith(lower, ".exr") ||
+        TfStringEndsWith(lower, ".ktx2");
+}
+
+std::string
+_DecodeXmlAttributeValue(const std::string& value)
+{
+    std::string decoded = value;
+    auto replaceAll = [&](const std::string& from, const std::string& to) {
+        size_t position = 0;
+        while ((position = decoded.find(from, position)) != std::string::npos) {
+            decoded.replace(position, from.size(), to);
+            position += to.size();
+        }
+    };
+    replaceAll("&quot;", "\"");
+    replaceAll("&apos;", "'");
+    replaceAll("&amp;", "&");
+    replaceAll("&lt;", "<");
+    replaceAll("&gt;", ">");
+    return decoded;
+}
+
+std::string
+_DirectoryName(const std::string& path)
+{
+    const size_t slash = path.find_last_of("/\\");
+    return slash == std::string::npos ? std::string() : path.substr(0, slash);
+}
+
+std::string
+_ResolveMaterialXRelativeAssetPath(
+    const std::string& materialXPath,
+    const std::string& assetPath)
+{
+    if (assetPath.empty() ||
+        TfStringStartsWith(assetPath, "/") ||
+        TfStringStartsWith(assetPath, "data:") ||
+        TfStringStartsWith(assetPath, "http://") ||
+        TfStringStartsWith(assetPath, "https://") ||
+        ArIsPackageRelativePath(assetPath)) {
+        return assetPath;
+    }
+
+    const size_t openBracket = materialXPath.find('[');
+    const size_t closeBracket = materialXPath.rfind(']');
+    if (openBracket != std::string::npos && closeBracket > openBracket) {
+        const std::string packagePath = materialXPath.substr(0, openBracket);
+        const std::string memberPath =
+            materialXPath.substr(openBracket + 1, closeBracket - openBracket - 1);
+        const std::string memberDirectory = _DirectoryName(memberPath);
+        const std::string relativePath =
+            memberDirectory.empty() ? assetPath : memberDirectory + "/" + assetPath;
+        return ArJoinPackageRelativePath(packagePath, relativePath);
+    }
+
+    const std::string directory = _DirectoryName(materialXPath);
+    return directory.empty() ? assetPath : directory + "/" + assetPath;
+}
+
+std::vector<std::string>
+_ExtractMaterialXTexturePaths(const std::string& materialXText)
+{
+    std::vector<std::string> paths;
+    std::unordered_set<std::string> seen;
+    size_t cursor = 0;
+    while ((cursor = materialXText.find("value=", cursor)) != std::string::npos) {
+        cursor += 6;
+        if (cursor >= materialXText.size()) {
+            break;
+        }
+        const char quote = materialXText[cursor];
+        if (quote != '"' && quote != '\'') {
+            continue;
+        }
+        const size_t start = cursor + 1;
+        const size_t end = materialXText.find(quote, start);
+        if (end == std::string::npos) {
+            break;
+        }
+
+        std::string value = _DecodeXmlAttributeValue(materialXText.substr(start, end - start));
+        if (_IsTextureAssetPath(value) && seen.insert(value).second) {
+            paths.push_back(value);
+        }
+        cursor = end + 1;
+    }
+    return paths;
+}
+
+void
+_AttachMaterialXDocumentResources(
+    emscripten::val& materialX,
+    const std::string& materialXPath,
+    const std::string& packageRootPath,
+    const std::string& materialXText)
+{
+    emscripten::val resources = materialX["resources"].isUndefined()
+        ? emscripten::val::array()
+        : materialX["resources"];
+    size_t resourceIndex = materialX["resources"].isUndefined()
+        ? 0
+        : resources["length"].as<size_t>();
+
+    for (const std::string& texturePath : _ExtractMaterialXTexturePaths(materialXText)) {
+        const std::string resolvedTexturePath =
+            _ResolveMaterialXRelativeAssetPath(materialXPath, texturePath);
+        emscripten::val texture = _ReadTextureAsset(resolvedTexturePath, packageRootPath);
+        if (!texture["data"].isUndefined()) {
+            resources.set(resourceIndex++, texture);
+        }
+    }
+
+    if (resourceIndex > 0) {
+        materialX.set("resources", resources);
+    }
 }
 
 bool
@@ -316,6 +476,11 @@ _ReadMaterialXAsset(
     if (asset["data"].isUndefined()) {
         return emscripten::val::undefined();
     }
+    _AttachMaterialXDocumentResources(
+        asset,
+        asset["path"].as<std::string>(),
+        packageRootPath,
+        _ReadTextAsset(rawPath, packageRootPath));
 
     if (!subIdentifier.IsEmpty()) {
         asset.set("materialName", subIdentifier.GetString());
@@ -795,6 +960,11 @@ _ReadMaterialXAssetFromMaterialPrim(
     if (asset["data"].isUndefined()) {
         return emscripten::val::undefined();
     }
+    _AttachMaterialXDocumentResources(
+        asset,
+        asset["path"].as<std::string>(),
+        packageRootPath,
+        _ReadTextAsset(rawPath, packageRootPath));
 
     asset.set("materialName", materialPrim.GetName().GetString());
     return asset;
@@ -817,8 +987,12 @@ _AttachMaterialTextureResources(
         "opacityTexture",
     };
 
-    emscripten::val resources = emscripten::val::array();
-    size_t resourceIndex = 0;
+    emscripten::val resources = materialX["resources"].isUndefined()
+        ? emscripten::val::array()
+        : materialX["resources"];
+    size_t resourceIndex = materialX["resources"].isUndefined()
+        ? 0
+        : resources["length"].as<size_t>();
     for (const char* key : kTextureKeys) {
         emscripten::val texture = materialValue[key];
         if (!texture.isUndefined() && !texture["data"].isUndefined()) {

@@ -1,0 +1,8 @@
+{
+  "materialSamples": {
+    "repository": "https://github.com/michaelybecker/material-samples.git",
+    "commit": "c5e86a40b7efeab25d2d2ce0913bc857a5e77121",
+    "sourceDirectory": "material-samples",
+    "portableShaderballDirectory": "portable-materialx_shaderball"
+  }
+}

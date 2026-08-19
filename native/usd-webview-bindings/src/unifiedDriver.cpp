@@ -325,10 +325,19 @@ private:
                     static_cast<int>(values.size()),
                     components == 2 ? HdTypeFloatVec2 : HdTypeFloatVec3,
                     &triangulated) != HdMeshComputationResult::Success) {
-                return false;
+                return _ExpandFlattenedFaceVaryingPrimvarToCorners(
+                    values, topo, triangleOrder, components, out);
+            }
+            if (!triangulated.IsHolding<VtArray<VecType>>()) {
+                return _ExpandFlattenedFaceVaryingPrimvarToCorners(
+                    values, topo, triangleOrder, components, out);
             }
             const VtArray<VecType> cornerValues =
                 triangulated.Get<VtArray<VecType>>();
+            if (cornerValues.empty()) {
+                return _ExpandFlattenedFaceVaryingPrimvarToCorners(
+                    values, topo, triangleOrder, components, out);
+            }
             for (int tri : triangleOrder) {
                 for (int corner = 0; corner < 3; ++corner) {
                     const size_t index = std::min(
@@ -369,6 +378,55 @@ private:
             pushValue(0);
         }
         return true;
+    }
+
+    template <typename VecType>
+    bool _ExpandFlattenedFaceVaryingPrimvarToCorners(
+        const VtArray<VecType>& values,
+        const TriangulatedTopology& topo,
+        const std::vector<int>& triangleOrder,
+        int components,
+        std::vector<float>* out) const
+    {
+        if (values.size() != topo.faceVertexIndices.size()) {
+            return false;
+        }
+
+        std::vector<size_t> faceStart;
+        faceStart.reserve(topo.faceVertexCounts.size());
+        size_t offset = 0;
+        for (int count : topo.faceVertexCounts) {
+            faceStart.push_back(offset);
+            offset += size_t(std::max(count, 0));
+        }
+
+        out->clear();
+        out->reserve(triangleOrder.size() * 3 * components);
+        for (int tri : triangleOrder) {
+            const size_t face = size_t(HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(
+                topo.primitiveParams[tri]));
+            if (face >= faceStart.size()) {
+                return false;
+            }
+            const size_t start = faceStart[face];
+            const size_t count = size_t(topo.faceVertexCounts[face]);
+            const GfVec3i& triangle = topo.triangleIndices[tri];
+            for (int corner = 0; corner < 3; ++corner) {
+                const int pointIndex = triangle[corner];
+                size_t valueIndex = start;
+                for (size_t local = 0; local < count; ++local) {
+                    if (topo.faceVertexIndices[start + local] == pointIndex) {
+                        valueIndex = start + local;
+                        break;
+                    }
+                }
+                const VecType& value = values[std::min(valueIndex, values.size() - 1)];
+                for (int c = 0; c < components; ++c) {
+                    out->push_back(float(value[c]));
+                }
+            }
+        }
+        return !out->empty();
     }
 
     bool _PurposeIsIncluded(const TfToken& purpose, const std::string& policy) const
