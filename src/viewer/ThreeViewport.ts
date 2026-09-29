@@ -312,6 +312,10 @@ export class ThreeViewport {
     this.frameStage();
   }
 
+  isCameraAnimating(): boolean {
+    return this.navigation.isFrameAnimating();
+  }
+
   setSplatViewOptions(options: SplatViewOptions): void {
     this.splatRenderer?.setOptions(options);
   }
