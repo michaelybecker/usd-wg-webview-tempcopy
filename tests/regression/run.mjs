@@ -83,7 +83,7 @@ async function captureCase(page, baseUrl, caseSpec, { forceWebGL = false } = {})
 
   const captured = [];
   for (const capture of caseSpec.captures ?? [{ name: "default" }]) {
-    await page.evaluate(async (ops) => {
+    const cameraPose = await page.evaluate(async (ops) => {
       const api = window.__USD_WEBVIEW_AUTOMATION__;
       for (const selection of ops.variantSelections ?? []) {
         await api.setVariantSelection(
@@ -99,11 +99,13 @@ async function captureCase(page, baseUrl, caseSpec, { forceWebGL = false } = {})
         await api.setTime(ops.timeCode);
       }
       await api.settle();
+      return api.getCameraPose();
     }, {
       variantSelections: capture.variantSelections,
       payloadOps: capture.payloadOps,
       timeCode: capture.timeCode,
     });
+    console.log(`CAMERA ${caseSpec.id}--${capture.name} ${JSON.stringify(cameraPose)}`);
 
     const screenshotPath = path.join(RESULTS_ROOT, `${caseSpec.id}--${capture.name}.png`);
     await page.locator(".viewport canvas").last().screenshot({ path: screenshotPath });

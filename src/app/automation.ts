@@ -33,6 +33,7 @@ export type AutomationApi = {
   setPayloadLoaded(primPath: string, loaded: boolean): Promise<boolean>;
   settle(frameCount?: number): Promise<void>;
   renderForCapture(passes?: number): Promise<void>;
+  getCameraPose(): { position: [number, number, number]; target: [number, number, number] };
   getViewportDebugMaterialInfo(): ViewportDebugMaterialInfo[];
 };
 
@@ -198,6 +199,9 @@ window.__USD_WEBVIEW_AUTOMATION__ = {
   },
   async renderForCapture(passes?: number): Promise<void> {
     await state.viewport.renderForCapture(passes);
+  },
+  getCameraPose(): { position: [number, number, number]; target: [number, number, number] } {
+    return state.viewport.getCameraPose();
   },
   getViewportDebugMaterialInfo(): ViewportDebugMaterialInfo[] {
     return state.viewport.getDebugMaterialInfo();

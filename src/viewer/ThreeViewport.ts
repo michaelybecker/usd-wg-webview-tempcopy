@@ -316,6 +316,13 @@ export class ThreeViewport {
     return this.navigation.isFrameAnimating();
   }
 
+  getCameraPose(): { position: [number, number, number]; target: [number, number, number] } {
+    return {
+      position: this.ctx.camera.position.toArray() as [number, number, number],
+      target: this.ctx.controls.target.toArray() as [number, number, number],
+    };
+  }
+
   setSplatViewOptions(options: SplatViewOptions): void {
     this.splatRenderer?.setOptions(options);
   }
