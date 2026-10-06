@@ -33,12 +33,6 @@ export type AutomationApi = {
   setPayloadLoaded(primPath: string, loaded: boolean): Promise<boolean>;
   settle(frameCount?: number): Promise<void>;
   renderForCapture(passes?: number): Promise<void>;
-  getCameraPose(): {
-    position: [number, number, number];
-    target: [number, number, number];
-    bounds: { min: [number, number, number]; max: [number, number, number] };
-    meshCount: number;
-  };
   getViewportDebugMaterialInfo(): ViewportDebugMaterialInfo[];
 };
 
@@ -124,17 +118,6 @@ export async function waitForSettledFrames(frameCount = automationSettleFrames):
   for (let index = 0; index < frameCount; index += 1) {
     await waitForUiPaint();
   }
-  // Stage loading and edits start an eased camera refit. Wait for that actual
-  // animation to finish so captures do not depend on host frame timing.
-  for (let index = 0; state.viewport.isCameraAnimating() && index < 60; index += 1) {
-    await waitForUiPaint();
-  }
-  if (state.viewport.isCameraAnimating()) {
-    throw new Error("Camera did not finish refitting within 60 frames.");
-  }
-  for (let index = 0; index < 2; index += 1) {
-    await waitForUiPaint();
-  }
 }
 
 window.__USD_WEBVIEW_AUTOMATION__ = {
@@ -204,14 +187,6 @@ window.__USD_WEBVIEW_AUTOMATION__ = {
   },
   async renderForCapture(passes?: number): Promise<void> {
     await state.viewport.renderForCapture(passes);
-  },
-  getCameraPose(): {
-    position: [number, number, number];
-    target: [number, number, number];
-    bounds: { min: [number, number, number]; max: [number, number, number] };
-    meshCount: number;
-  } {
-    return state.viewport.getCameraPose();
   },
   getViewportDebugMaterialInfo(): ViewportDebugMaterialInfo[] {
     return state.viewport.getDebugMaterialInfo();

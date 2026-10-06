@@ -62,13 +62,13 @@ public/usd-webview-bindings/usdWebViewBindings.js
 ## 3. Run the frontend
 
 ```sh
-npm install
+npm ci
 npm run dev
 ```
 
 Open the URL printed by Vite. The runtime panel should report **ready** once the WASM module loads.
 
-Plain `npm install` is enough for the frontend dependencies, including the
+Use `npm ci` to install the exact locked frontend dependencies, including the
 pinned upstream Three.js dev snapshot and the checked-in official MaterialX
 JavaScript/WASM validation runtime.
 

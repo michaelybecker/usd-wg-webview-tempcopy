@@ -312,29 +312,6 @@ export class ThreeViewport {
     this.frameStage();
   }
 
-  isCameraAnimating(): boolean {
-    return this.navigation.isFrameAnimating();
-  }
-
-  getCameraPose(): {
-    position: [number, number, number];
-    target: [number, number, number];
-    bounds: { min: [number, number, number]; max: [number, number, number] };
-    meshCount: number;
-  } {
-    this.stageRoot.updateMatrixWorld(true);
-    const bounds = new Box3().setFromObject(this.stageRoot);
-    return {
-      position: this.ctx.camera.position.toArray() as [number, number, number],
-      target: this.ctx.controls.target.toArray() as [number, number, number],
-      bounds: {
-        min: bounds.min.toArray() as [number, number, number],
-        max: bounds.max.toArray() as [number, number, number],
-      },
-      meshCount: this.meshByPath.size,
-    };
-  }
-
   setSplatViewOptions(options: SplatViewOptions): void {
     this.splatRenderer?.setOptions(options);
   }
@@ -644,6 +621,9 @@ export class ThreeViewport {
       mesh.matrixAutoUpdate = false;
     }
 
+    // Direct matrix writes must invalidate world transforms before bounds queries.
+    mesh.matrixWorldNeedsUpdate = true;
+
     if (!(mesh instanceof InstancedMesh)) {
       return;
     }
@@ -668,6 +648,7 @@ export class ThreeViewport {
       if (!mesh || matrix.length !== 16) continue;
       mesh.matrix.set(...(matrix as Parameters<typeof mesh.matrix.set>));
       mesh.matrix.transpose();
+      mesh.matrixWorldNeedsUpdate = true;
     }
   }
 

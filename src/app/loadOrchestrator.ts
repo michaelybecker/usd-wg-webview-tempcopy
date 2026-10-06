@@ -4,7 +4,6 @@ import { runtime, state } from "./appState";
 import { filePicker, folderPicker, playbarScrubber, viewportElement } from "./dom";
 import {
   automationEnabled,
-  automationManifestUrl,
   getAutomationState,
   setAutomationState,
   waitForSettledFrames,
@@ -171,7 +170,7 @@ export async function loadFiles(files: File[]): Promise<void> {
       ? `Ready — skeleton bindings were inferred (${inferredCount})`
       : "Ready";
     setStatus(stageFailed ? "Stage load failed" : readyMessage, false);
-    if (automationEnabled && (stageFailed || !automationManifestUrl)) {
+    if (automationEnabled) {
       setAutomationState(
         stageFailed ? "error" : "ready",
         stageFailed ? result.summary?.error ?? "Stage load failed" : "Ready",
